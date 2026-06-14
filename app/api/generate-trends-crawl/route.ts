@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import type { Category, GalleryImage, RelatedSource } from '@/lib/types'
+import { translateToKorean, translateTags } from '@/lib/utils/translate'
 
 export const maxDuration = 60
 
@@ -359,10 +360,24 @@ export async function POST() {
     })
   )
 
+  // Translate HN and RSS items (YouTube KR items are already in Korean)
+  const translatedRows = await Promise.all(
+    rows.map(async (row, i) => {
+      const item = selected[i]
+      if (item.source === 'youtube') return row
+      const [title, summary, tags] = await Promise.all([
+        translateToKorean(row.title),
+        translateToKorean(row.summary),
+        translateTags(row.tags),
+      ])
+      return { ...row, title, summary, tags }
+    })
+  )
+
   const insertRes = await fetch(`${SURL}/rest/v1/trends`, {
     method: 'POST',
     headers: { ...sbHeaders, 'Content-Type': 'application/json', Prefer: 'return=representation' },
-    body: JSON.stringify(rows),
+    body: JSON.stringify(translatedRows),
   })
 
   if (!insertRes.ok) {

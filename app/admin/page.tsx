@@ -46,6 +46,10 @@ export default function AdminPage() {
   const [updateProgress, setUpdateProgress] = useState({ done: 0, total: 0 })
   const [updateDone, setUpdateDone] = useState(false)
 
+  const [translating, setTranslating] = useState(false)
+  const [translateProgress, setTranslateProgress] = useState({ done: 0, total: 0 })
+  const [translateDone, setTranslateDone] = useState(false)
+
   const loadStats = useCallback(async (tok: string) => {
     setStatsLoading(true)
     try {
@@ -128,6 +132,28 @@ export default function AdminPage() {
 
     setUpdating(false)
     setUpdateDone(true)
+  }
+
+  const handleTranslateAll = async () => {
+    if (!stats?.allIds?.length) return
+    setTranslating(true)
+    setTranslateDone(false)
+    const ids = stats.allIds
+    setTranslateProgress({ done: 0, total: ids.length })
+
+    for (let i = 0; i < ids.length; i++) {
+      try {
+        await fetch('/api/admin/translate-trend', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-admin-token': token! },
+          body: JSON.stringify({ trendId: ids[i] }),
+        })
+      } catch {}
+      setTranslateProgress({ done: i + 1, total: ids.length })
+    }
+
+    setTranslating(false)
+    setTranslateDone(true)
   }
 
   const handleLogout = () => {
@@ -347,6 +373,66 @@ export default function AdminPage() {
             >
               <p className="text-sm font-bold" style={{ color: '#276749' }}>
                 ✅ 전체 이미지 업데이트 완료
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* ── 한국어 번역 카드 ──────────────────────────────────── */}
+        <div
+          className="rounded-2xl p-5 mb-4"
+          style={{ backgroundColor: '#fff', boxShadow: '0 1px 6px rgba(0,0,0,0.06)' }}
+        >
+          <p className="text-xs font-bold mb-3 uppercase tracking-wide" style={{ color: '#7F8C8D' }}>
+            한국어 번역
+          </p>
+          <button
+            onClick={handleTranslateAll}
+            disabled={translating || !stats?.allIds?.length}
+            className="w-full rounded-xl font-bold text-white transition-opacity active:opacity-80 disabled:opacity-60"
+            style={{
+              backgroundColor: '#E67E22',
+              fontSize: '17px',
+              padding: '20px 16px',
+              lineHeight: 1.3,
+            }}
+          >
+            {translating
+              ? `🌐 번역 중... ${translateProgress.done}/${translateProgress.total}`
+              : '🌐 전체 한국어로 번역'}
+          </button>
+
+          {translating && (
+            <div className="mt-4">
+              <div
+                className="rounded-full overflow-hidden"
+                style={{ backgroundColor: '#E8E4DE', height: '10px' }}
+              >
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${translateProgress.total ? Math.round((translateProgress.done / translateProgress.total) * 100) : 0}%`,
+                    backgroundColor: '#E67E22',
+                    transition: 'width 0.4s ease',
+                  }}
+                />
+              </div>
+              <p className="text-xs mt-2 text-center" style={{ color: '#7F8C8D' }}>
+                {translateProgress.done} / {translateProgress.total} 완료 · MyMemory API
+              </p>
+            </div>
+          )}
+
+          {translateDone && !translating && (
+            <div
+              className="mt-4 px-4 py-3 rounded-xl"
+              style={{ backgroundColor: '#F0FFF4', border: '1.5px solid #68D391' }}
+            >
+              <p className="text-sm font-bold" style={{ color: '#276749' }}>
+                ✅ 전체 한국어 번역 완료
+              </p>
+              <p className="text-xs mt-0.5" style={{ color: '#38A169' }}>
+                이미 한국어인 항목은 건너뜀
               </p>
             </div>
           )}
