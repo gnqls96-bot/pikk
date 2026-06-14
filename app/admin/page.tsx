@@ -20,6 +20,7 @@ type GenResult = {
   withImages: number
   sources?: { youtube: number; hn: number; rss: number }
   hasYoutube?: boolean
+  youtubeStatus?: string
 }
 
 function formatRelativeTime(dateStr: string) {
@@ -42,13 +43,9 @@ export default function AdminPage() {
   const [genResult, setGenResult] = useState<GenResult | null>(null)
   const [genError, setGenError] = useState('')
 
-  const [updating, setUpdating] = useState(false)
-  const [updateProgress, setUpdateProgress] = useState({ done: 0, total: 0 })
-  const [updateDone, setUpdateDone] = useState(false)
-
-  const [translating, setTranslating] = useState(false)
-  const [translateProgress, setTranslateProgress] = useState({ done: 0, total: 0 })
-  const [translateDone, setTranslateDone] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
+  const [regenProgress, setRegenProgress] = useState({ done: 0, total: 0 })
+  const [regenDone, setRegenDone] = useState(false)
 
   const loadStats = useCallback(async (tok: string) => {
     setStatsLoading(true)
@@ -100,7 +97,7 @@ export default function AdminPage() {
       const res = await fetch('/api/generate-trends-crawl', { method: 'POST' })
       if (res.ok) {
         const data = await res.json()
-        setGenResult({ count: data.count, withImages: data.withImages })
+        setGenResult(data)
         loadStats(token!)
       } else {
         const err = await res.json().catch(() => ({}))
@@ -112,48 +109,27 @@ export default function AdminPage() {
     setGenerating(false)
   }
 
-  const handleUpdateImages = async () => {
+  const handleRegenerateAll = async () => {
     if (!stats?.allIds?.length) return
-    setUpdating(true)
-    setUpdateDone(false)
+    setRegenerating(true)
+    setRegenDone(false)
     const ids = stats.allIds
-    setUpdateProgress({ done: 0, total: ids.length })
+    setRegenProgress({ done: 0, total: ids.length })
 
     for (let i = 0; i < ids.length; i++) {
       try {
-        await fetch('/api/admin/update-image', {
+        await fetch('/api/admin/regenerate-trend', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-admin-token': token! },
           body: JSON.stringify({ trendId: ids[i] }),
         })
       } catch {}
-      setUpdateProgress({ done: i + 1, total: ids.length })
+      setRegenProgress({ done: i + 1, total: ids.length })
     }
 
-    setUpdating(false)
-    setUpdateDone(true)
-  }
-
-  const handleTranslateAll = async () => {
-    if (!stats?.allIds?.length) return
-    setTranslating(true)
-    setTranslateDone(false)
-    const ids = stats.allIds
-    setTranslateProgress({ done: 0, total: ids.length })
-
-    for (let i = 0; i < ids.length; i++) {
-      try {
-        await fetch('/api/admin/translate-trend', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-admin-token': token! },
-          body: JSON.stringify({ trendId: ids[i] }),
-        })
-      } catch {}
-      setTranslateProgress({ done: i + 1, total: ids.length })
-    }
-
-    setTranslating(false)
-    setTranslateDone(true)
+    setRegenerating(false)
+    setRegenDone(true)
+    loadStats(token!)
   }
 
   const handleLogout = () => {
@@ -172,14 +148,9 @@ export default function AdminPage() {
       >
         <div className="w-full max-w-sm">
           <div className="text-center mb-8">
-            <h1 className="text-4xl font-black" style={{ color: '#2C3E50' }}>
-              Pikk
-            </h1>
-            <p className="text-sm mt-1.5 font-medium" style={{ color: '#7F8C8D' }}>
-              관리자 페이지
-            </p>
+            <h1 className="text-4xl font-black" style={{ color: '#2C3E50' }}>Pikk</h1>
+            <p className="text-sm mt-1.5 font-medium" style={{ color: '#7F8C8D' }}>관리자 페이지</p>
           </div>
-
           <div
             className="rounded-2xl p-6"
             style={{ backgroundColor: '#fff', boxShadow: '0 2px 16px rgba(0,0,0,0.08)' }}
@@ -200,9 +171,7 @@ export default function AdminPage() {
               }}
             />
             {authError && (
-              <p className="text-sm mb-3 px-1" style={{ color: '#E74C3C' }}>
-                {authError}
-              </p>
+              <p className="text-sm mb-3 px-1" style={{ color: '#E74C3C' }}>{authError}</p>
             )}
             <button
               onClick={handleLogin}
@@ -219,8 +188,8 @@ export default function AdminPage() {
   }
 
   // ── 대시보드 ───────────────────────────────────────────────────
-  const updatePct = updateProgress.total
-    ? Math.round((updateProgress.done / updateProgress.total) * 100)
+  const regenPct = regenProgress.total
+    ? Math.round((regenProgress.done / regenProgress.total) * 100)
     : 0
 
   return (
@@ -230,13 +199,9 @@ export default function AdminPage() {
         {/* 헤더 */}
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-black" style={{ color: '#2C3E50' }}>
-              Pikk Admin
-            </h1>
+            <h1 className="text-2xl font-black" style={{ color: '#2C3E50' }}>Pikk Admin</h1>
             <p className="text-sm mt-0.5" style={{ color: '#7F8C8D' }}>
-              {statsLoading
-                ? '로딩 중...'
-                : `총 트렌드 ${stats?.count ?? 0}개`}
+              {statsLoading ? '로딩 중...' : `총 트렌드 ${stats?.count ?? 0}개`}
             </p>
           </div>
           <button
@@ -260,28 +225,19 @@ export default function AdminPage() {
             onClick={handleGenerate}
             disabled={generating}
             className="w-full rounded-xl font-bold text-white transition-opacity active:opacity-80 disabled:opacity-60"
-            style={{
-              backgroundColor: '#4A90A4',
-              fontSize: '17px',
-              padding: '20px 16px',
-              lineHeight: 1.3,
-            }}
+            style={{ backgroundColor: '#4A90A4', fontSize: '17px', padding: '20px 16px', lineHeight: 1.3 }}
           >
-            {generating ? '⏳ 생성 중...' : '🚀 오늘 트렌드 생성'}
+            {generating ? '⏳ 수집·생성 중...' : '🚀 오늘 트렌드 생성'}
           </button>
 
           {generating && (
             <div className="flex items-center gap-2.5 mt-4 px-1">
               <div
                 className="w-4 h-4 rounded-full border-2 flex-shrink-0"
-                style={{
-                  borderColor: '#4A90A4',
-                  borderTopColor: 'transparent',
-                  animation: 'spin 0.8s linear infinite',
-                }}
+                style={{ borderColor: '#4A90A4', borderTopColor: 'transparent', animation: 'spin 0.8s linear infinite' }}
               />
               <p className="text-sm" style={{ color: '#7F8C8D' }}>
-                YouTube · HN · RSS 수집 중... (20~40초 소요)
+                YouTube · HN · RSS 수집 → Sonnet 4.6 한국어 생성 중... (30~50초)
               </p>
             </div>
           )}
@@ -303,9 +259,9 @@ export default function AdminPage() {
               <p className="text-xs mt-0.5" style={{ color: '#38A169' }}>
                 이미지 포함 {genResult.withImages}개
               </p>
-              {!genResult.hasYoutube && (
-                <p className="text-xs mt-1.5" style={{ color: '#D97706' }}>
-                  ⚠️ YouTube API 키 없음 — HN+RSS만 수집됨
+              {genResult.youtubeStatus && !genResult.hasYoutube && (
+                <p className="text-xs mt-1.5 font-mono break-all" style={{ color: '#D97706' }}>
+                  ⚠️ {genResult.youtubeStatus}
                 </p>
               )}
             </div>
@@ -321,31 +277,29 @@ export default function AdminPage() {
           )}
         </div>
 
-        {/* ── 이미지 업데이트 카드 ─────────────────────────────── */}
+        {/* ── 기존 트렌드 재생성 카드 ──────────────────────────── */}
         <div
           className="rounded-2xl p-5 mb-4"
           style={{ backgroundColor: '#fff', boxShadow: '0 1px 6px rgba(0,0,0,0.06)' }}
         >
-          <p className="text-xs font-bold mb-3 uppercase tracking-wide" style={{ color: '#7F8C8D' }}>
-            이미지 업데이트
+          <p className="text-xs font-bold mb-1 uppercase tracking-wide" style={{ color: '#7F8C8D' }}>
+            기존 트렌드 재생성
+          </p>
+          <p className="text-xs mb-3" style={{ color: '#95A5A6' }}>
+            Sonnet 4.6 저널리스트 모드로 기존 트렌드 전체 재작성 (1000자 본문)
           </p>
           <button
-            onClick={handleUpdateImages}
-            disabled={updating || !stats?.allIds?.length}
+            onClick={handleRegenerateAll}
+            disabled={regenerating || !stats?.allIds?.length}
             className="w-full rounded-xl font-bold text-white transition-opacity active:opacity-80 disabled:opacity-60"
-            style={{
-              backgroundColor: '#7C67EE',
-              fontSize: '17px',
-              padding: '20px 16px',
-              lineHeight: 1.3,
-            }}
+            style={{ backgroundColor: '#2C3E50', fontSize: '17px', padding: '20px 16px', lineHeight: 1.3 }}
           >
-            {updating
-              ? `🖼 업데이트 중... ${updateProgress.done}/${updateProgress.total}`
-              : '🖼 전체 이미지 재수집'}
+            {regenerating
+              ? `✍️ 재생성 중... ${regenProgress.done}/${regenProgress.total}`
+              : '✍️ 전체 트렌드 재생성'}
           </button>
 
-          {updating && (
+          {regenerating && (
             <div className="mt-4">
               <div
                 className="rounded-full overflow-hidden"
@@ -353,86 +307,22 @@ export default function AdminPage() {
               >
                 <div
                   className="h-full rounded-full"
-                  style={{
-                    width: `${updatePct}%`,
-                    backgroundColor: '#7C67EE',
-                    transition: 'width 0.4s ease',
-                  }}
+                  style={{ width: `${regenPct}%`, backgroundColor: '#2C3E50', transition: 'width 0.4s ease' }}
                 />
               </div>
               <p className="text-xs mt-2 text-center" style={{ color: '#7F8C8D' }}>
-                {updateProgress.done} / {updateProgress.total} 완료 ({updatePct}%)
+                {regenProgress.done} / {regenProgress.total} 완료 ({regenPct}%) · Sonnet 4.6
               </p>
             </div>
           )}
 
-          {updateDone && !updating && (
+          {regenDone && !regenerating && (
             <div
               className="mt-4 px-4 py-3 rounded-xl"
               style={{ backgroundColor: '#F0FFF4', border: '1.5px solid #68D391' }}
             >
               <p className="text-sm font-bold" style={{ color: '#276749' }}>
-                ✅ 전체 이미지 업데이트 완료
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* ── 한국어 번역 카드 ──────────────────────────────────── */}
-        <div
-          className="rounded-2xl p-5 mb-4"
-          style={{ backgroundColor: '#fff', boxShadow: '0 1px 6px rgba(0,0,0,0.06)' }}
-        >
-          <p className="text-xs font-bold mb-3 uppercase tracking-wide" style={{ color: '#7F8C8D' }}>
-            한국어 번역
-          </p>
-          <button
-            onClick={handleTranslateAll}
-            disabled={translating || !stats?.allIds?.length}
-            className="w-full rounded-xl font-bold text-white transition-opacity active:opacity-80 disabled:opacity-60"
-            style={{
-              backgroundColor: '#E67E22',
-              fontSize: '17px',
-              padding: '20px 16px',
-              lineHeight: 1.3,
-            }}
-          >
-            {translating
-              ? `🌐 번역 중... ${translateProgress.done}/${translateProgress.total}`
-              : '🌐 전체 한국어로 번역'}
-          </button>
-
-          {translating && (
-            <div className="mt-4">
-              <div
-                className="rounded-full overflow-hidden"
-                style={{ backgroundColor: '#E8E4DE', height: '10px' }}
-              >
-                <div
-                  className="h-full rounded-full"
-                  style={{
-                    width: `${translateProgress.total ? Math.round((translateProgress.done / translateProgress.total) * 100) : 0}%`,
-                    backgroundColor: '#E67E22',
-                    transition: 'width 0.4s ease',
-                  }}
-                />
-              </div>
-              <p className="text-xs mt-2 text-center" style={{ color: '#7F8C8D' }}>
-                {translateProgress.done} / {translateProgress.total} 완료 · MyMemory API
-              </p>
-            </div>
-          )}
-
-          {translateDone && !translating && (
-            <div
-              className="mt-4 px-4 py-3 rounded-xl"
-              style={{ backgroundColor: '#F0FFF4', border: '1.5px solid #68D391' }}
-            >
-              <p className="text-sm font-bold" style={{ color: '#276749' }}>
-                ✅ 전체 한국어 번역 완료
-              </p>
-              <p className="text-xs mt-0.5" style={{ color: '#38A169' }}>
-                이미 한국어인 항목은 건너뜀
+                ✅ 전체 재생성 완료
               </p>
             </div>
           )}
@@ -465,10 +355,7 @@ export default function AdminPage() {
                     {trend.category}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p
-                      className="text-sm font-semibold leading-snug line-clamp-2"
-                      style={{ color: '#2C3E50' }}
-                    >
+                    <p className="text-sm font-semibold leading-snug line-clamp-2" style={{ color: '#2C3E50' }}>
                       {trend.title}
                     </p>
                     <p className="text-xs mt-0.5" style={{ color: '#7F8C8D' }}>
@@ -483,9 +370,7 @@ export default function AdminPage() {
       </div>
 
       <style jsx global>{`
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
       `}</style>
     </div>
   )
