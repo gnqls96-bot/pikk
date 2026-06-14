@@ -1,6 +1,8 @@
 import type { Trend } from '@/lib/types'
 
-export const seedTrends: Trend[] = [
+type SeedTrend = Omit<Trend, 'why_trending' | 'who_affected' | 'heat_score' | 'body' | 'related_sources' | 'gallery_images'>
+
+const rawSeeds: SeedTrend[] = [
   {
     id: '1',
     title: '버터보드, 인스타그램을 점령한 새로운 브런치 트렌드',
@@ -170,3 +172,13 @@ export const seedTrends: Trend[] = [
     published_at: '2025-06-08T15:00:00Z',
   },
 ]
+
+export const seedTrends: Trend[] = rawSeeds.map((t) => ({
+  ...t,
+  why_trending: null,
+  who_affected: null,
+  heat_score: null,
+  body: null,
+  related_sources: null,
+  gallery_images: null,
+}))

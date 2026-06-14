@@ -1,10 +1,12 @@
 import Link from 'next/link'
-import Image from 'next/image'
 import { notFound } from 'next/navigation'
 import Header from '@/components/Header'
-import { CATEGORY_COLORS } from '@/lib/types'
+import HeroImage from '@/components/HeroImage'
+import GallerySection from '@/components/GallerySection'
+import { CATEGORY_COLORS, CATEGORY_EMOJI } from '@/lib/types'
 import { getTrends } from '@/lib/data/trends'
 import type { Trend } from '@/lib/types'
+import { proxyUrl } from '@/lib/utils/proxyUrl'
 
 async function getTrend(id: string): Promise<Trend | null> {
   if (
@@ -36,6 +38,20 @@ function formatDate(dateStr: string) {
   })
 }
 
+function heatColor(score: number): string {
+  if (score >= 80) return '#E74C3C'
+  if (score >= 60) return '#F39C12'
+  if (score >= 40) return '#E8A87C'
+  return '#4A90A4'
+}
+
+function heatLabel(score: number): string {
+  if (score >= 80) return '매우 핫'
+  if (score >= 60) return '핫'
+  if (score >= 40) return '상승중'
+  return '주목중'
+}
+
 export default async function TrendDetailPage({
   params,
 }: {
@@ -50,6 +66,12 @@ export default async function TrendDetailPage({
   const related = allTrends
     .filter((t) => t.category === trend.category && t.id !== id)
     .slice(0, 3)
+
+  const gallery = trend.gallery_images ?? []
+  const galleryExtra = gallery.slice(1)
+  const sources = trend.related_sources ?? []
+  const fallbackEmoji = CATEGORY_EMOJI[trend.category]
+  const heat = trend.heat_score
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: '#F7F5F0' }}>
@@ -70,26 +92,23 @@ export default async function TrendDetailPage({
           className="rounded-2xl overflow-hidden mb-8"
           style={{ backgroundColor: '#fff', boxShadow: '0 1px 8px rgba(0,0,0,0.08)' }}
         >
-          {/* Category bar */}
+          {/* Category color bar */}
           <div className="h-1.5" style={{ backgroundColor: categoryColor }} />
 
           {/* Hero image */}
           {trend.image_url && (
-            <div className="relative h-52 sm:h-72 w-full overflow-hidden bg-gray-100">
-              <Image
-                src={trend.image_url}
-                alt={trend.title}
-                fill
-                className="object-cover"
-                priority
-                sizes="(max-width: 672px) 100vw, 672px"
-              />
-            </div>
+            <HeroImage
+              imageUrl={trend.image_url}
+              title={trend.title}
+              gallery0={gallery[0]}
+              fallbackEmoji={fallbackEmoji}
+              categoryColor={categoryColor}
+            />
           )}
 
           <div className="p-6 sm:p-8">
-            {/* Meta */}
-            <div className="flex items-center gap-2 mb-4">
+            {/* Meta row */}
+            <div className="flex flex-wrap items-center gap-2 mb-4">
               <span
                 className="text-xs font-bold px-2.5 py-1 rounded-full"
                 style={{ backgroundColor: categoryColor + '18', color: categoryColor }}
@@ -112,23 +131,106 @@ export default async function TrendDetailPage({
               {trend.title}
             </h1>
 
-            {/* Original title */}
             {trend.original_title && (
               <p className="text-sm mb-5 italic" style={{ color: '#7F8C8D' }}>
                 {trend.original_title}
               </p>
             )}
 
+            {/* Heat score gauge */}
+            {heat !== null && (
+              <div className="mb-5 p-4 rounded-xl" style={{ backgroundColor: '#F7F5F0' }}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-bold" style={{ color: '#2C3E50' }}>
+                    🌡️ 픽크 온도
+                  </span>
+                  <span className="text-sm font-black" style={{ color: heatColor(heat) }}>
+                    {heat} <span className="text-xs font-normal">— {heatLabel(heat)}</span>
+                  </span>
+                </div>
+                <div className="rounded-full overflow-hidden" style={{ backgroundColor: '#E8E4DE', height: '8px' }}>
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${heat}%`,
+                      backgroundColor: heatColor(heat),
+                      transition: 'width 0.6s ease',
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
             <div className="border-t border-black/5 my-5" />
 
             {/* Summary */}
-            <p className="text-sm leading-loose" style={{ color: '#2C3E50' }}>
-              {trend.summary}
-            </p>
+            <div className="mb-5">
+              <p className="text-xs font-bold mb-2" style={{ color: '#7F8C8D' }}>
+                핵심 요약
+              </p>
+              <div className="space-y-1.5">
+                {(trend.summary ?? '').split('\n').filter(Boolean).map((line, i) => (
+                  <div key={i} className="flex items-start gap-2">
+                    <span className="text-xs mt-0.5 flex-shrink-0" style={{ color: categoryColor }}>
+                      {i === 0 ? '①' : i === 1 ? '②' : '③'}
+                    </span>
+                    <p className="text-sm leading-relaxed" style={{ color: '#2C3E50' }}>
+                      {line}
+                    </p>
+                  </div>
+                ))}
+                {/* fallback: plain summary if no newlines */}
+                {!(trend.summary ?? '').includes('\n') && (
+                  <p className="text-sm leading-relaxed" style={{ color: '#2C3E50' }}>
+                    {trend.summary}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Body */}
+            {trend.body && (
+              <>
+                <div className="border-t border-black/5 my-5" />
+                <div className="space-y-3">
+                  {trend.body.split('\n\n').filter(Boolean).map((para, i) => (
+                    <p key={i} className="text-sm leading-loose" style={{ color: '#2C3E50' }}>
+                      {para}
+                    </p>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {/* Why trending + Who affected */}
+            {(trend.why_trending || trend.who_affected) && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-5">
+                {trend.why_trending && (
+                  <div className="p-4 rounded-xl" style={{ backgroundColor: '#FFF8F5', border: '1px solid #FFE8D6' }}>
+                    <p className="text-xs font-bold mb-1.5" style={{ color: '#E8A87C' }}>
+                      🔥 왜 지금 뜨는가
+                    </p>
+                    <p className="text-xs leading-relaxed" style={{ color: '#2C3E50' }}>
+                      {trend.why_trending}
+                    </p>
+                  </div>
+                )}
+                {trend.who_affected && (
+                  <div className="p-4 rounded-xl" style={{ backgroundColor: '#F5F5FF', border: '1px solid #E0DEFF' }}>
+                    <p className="text-xs font-bold mb-1.5" style={{ color: '#7C67EE' }}>
+                      👥 누가 주목하나
+                    </p>
+                    <p className="text-xs leading-relaxed" style={{ color: '#2C3E50' }}>
+                      {trend.who_affected}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Tags */}
             {trend.tags.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-6">
+              <div className="flex flex-wrap gap-2 mt-5">
                 {trend.tags.map((tag) => (
                   <span
                     key={tag}
@@ -141,9 +243,51 @@ export default async function TrendDetailPage({
               </div>
             )}
 
-            {/* Source */}
-            {trend.source_url && trend.source_url !== 'https://example.com' && (
-              <div className="mt-6 pt-5 border-t border-black/5">
+            {/* Gallery — images 2-5 with onError handling */}
+            {galleryExtra.length > 0 && <GallerySection images={galleryExtra} />}
+
+            {/* Related sources */}
+            {sources.length > 0 && (
+              <>
+                <div className="border-t border-black/5 my-5" />
+                <p className="text-xs font-bold mb-3" style={{ color: '#7F8C8D' }}>
+                  📰 참고 뉴스
+                </p>
+                <div className="space-y-2.5">
+                  {sources.map((src, i) => (
+                    <a
+                      key={i}
+                      href={src.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-start gap-2.5 group"
+                    >
+                      <span
+                        className="flex-shrink-0 text-xs font-bold w-5 h-5 rounded-full flex items-center justify-center mt-0.5"
+                        style={{ backgroundColor: categoryColor + '18', color: categoryColor }}
+                      >
+                        {i + 1}
+                      </span>
+                      <div className="min-w-0">
+                        <p
+                          className="text-xs font-medium leading-snug group-hover:underline"
+                          style={{ color: '#2C3E50' }}
+                        >
+                          {src.title}
+                        </p>
+                        <p className="text-xs mt-0.5" style={{ color: '#7F8C8D' }}>
+                          {src.site_name}
+                        </p>
+                      </div>
+                    </a>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {/* Legacy source link (fallback) */}
+            {sources.length === 0 && trend.source_url && !trend.source_url.includes('example.com') && (
+              <div className="mt-5 pt-5 border-t border-black/5">
                 <a
                   href={trend.source_url}
                   target="_blank"
@@ -176,7 +320,6 @@ export default async function TrendDetailPage({
               </p>
             </div>
           </div>
-
           <div className="mt-5 flex flex-wrap gap-2">
             <StoreButton icon="🍎" store="App Store" />
             <StoreButton icon="▶" store="Google Play" />
@@ -198,13 +341,12 @@ export default async function TrendDetailPage({
                   style={{ backgroundColor: '#fff', boxShadow: '0 1px 4px rgba(0,0,0,0.05)' }}
                 >
                   {t.image_url && (
-                    <div className="relative w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 bg-gray-100">
-                      <Image
-                        src={t.image_url}
+                    <div className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 bg-gray-100">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={proxyUrl(t.image_url) ?? t.image_url}
                         alt={t.title}
-                        fill
-                        className="object-cover"
-                        sizes="56px"
+                        className="w-full h-full object-cover"
                       />
                     </div>
                   )}

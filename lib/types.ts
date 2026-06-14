@@ -31,6 +31,18 @@ export const CATEGORY_EMOJI: Record<Category, string> = {
   '테크': '💻', '라이프': '✨', '디자인': '🎨', '광고': '📣', '영상': '🎬',
 }
 
+export interface RelatedSource {
+  title: string
+  url: string
+  site_name: string
+}
+
+export interface GalleryImage {
+  url: string
+  source_url: string
+  site_name: string
+}
+
 export interface Trend {
   id: string
   title: string
@@ -43,6 +55,12 @@ export interface Trend {
   view_count: number
   created_at: string
   published_at: string
+  why_trending: string | null
+  who_affected: string | null
+  heat_score: number | null
+  body: string | null
+  related_sources: RelatedSource[] | null
+  gallery_images: GalleryImage[] | null
 }
 
 export interface WaitlistEntry {

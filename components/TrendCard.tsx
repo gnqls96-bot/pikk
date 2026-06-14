@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useState, useEffect } from 'react'
 import type { Trend } from '@/lib/types'
 import { CATEGORY_COLORS, CATEGORY_EMOJI } from '@/lib/types'
+import { proxyUrl } from '@/lib/utils/proxyUrl'
 
 function formatDate(dateStr: string) {
   const date = new Date(dateStr)
@@ -16,7 +17,7 @@ function formatDate(dateStr: string) {
 
 export default function TrendCard({ trend }: { trend: Trend }) {
   const categoryColor = CATEGORY_COLORS[trend.category]
-  const [imgSrc, setImgSrc] = useState<string | null>(trend.image_url)
+  const [imgSrc, setImgSrc] = useState<string | null>(proxyUrl(trend.image_url))
   const [loading, setLoading] = useState(!trend.image_url)
   const [imgError, setImgError] = useState(false)
 
@@ -24,7 +25,7 @@ export default function TrendCard({ trend }: { trend: Trend }) {
     if (trend.image_url) return
     fetch(`/api/pexels?q=${encodeURIComponent(trend.title)}`)
       .then(r => r.json())
-      .then(data => { if (data.url) setImgSrc(data.url) })
+      .then(data => { if (data.url) setImgSrc(proxyUrl(data.url)) })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [trend.id, trend.title, trend.image_url])
