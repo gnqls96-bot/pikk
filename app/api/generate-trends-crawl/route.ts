@@ -4,7 +4,12 @@ import { fetchOgImage, fetchRelatedGalleryImages, fetchPexelsImages } from '@/li
 
 export const maxDuration = 60
 
-// ── Types ──────────────────────────────────────────────────────
+// ── Structured logging ──────────────────────────────────────────
+function log(msg: string, data?: unknown) {
+  console.log(JSON.stringify({ ts: new Date().toISOString(), msg, ...(data != null ? { data } : {}) }))
+}
+
+// ── Types ───────────────────────────────────────────────────────
 interface CrawledItem {
   title: string
   description: string
@@ -85,7 +90,7 @@ function calcHeatFromLog(value: number, base = 50): number {
 // ── YouTube KR ──────────────────────────────────────────────────
 async function fetchYouTubeTrending(): Promise<{ items: CrawledItem[], status: string }> {
   const key = process.env.YOUTUBE_API_KEY
-  if (!key) return { items: [], status: 'YOUTUBE_API_KEY 환경변수 미설정' }
+  if (!key) return { items: [], status: 'YOUTUBE_API_KEY 미설정' }
   try {
     const res = await fetch(
       `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=KR&maxResults=15&key=${key}`,
@@ -244,7 +249,6 @@ async function fetchDevTo(): Promise<CrawledItem[]> {
   } catch { return [] }
 }
 
-
 // ── Dedup ───────────────────────────────────────────────────────
 function normalize(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9가-힣]/g, ' ').replace(/\s+/g, ' ').trim()
@@ -268,17 +272,17 @@ function dedup(items: CrawledItem[]): CrawledItem[] {
   return result
 }
 
-// ── Claude Sonnet 4.6 저널리스트 — 단일 호출 (선별 + 짧은 기사) ──
+// ── Claude 저널리스트 (선별 + 짧은 기사) ────────────────────────
 function makeJournalistPrompt(items: CrawledItem[]): string {
   const list = items
     .map((item, i) => `${i + 1}. [${item.site_name}] ${item.title}`)
     .join('\n')
 
-  return `트렌드 에디터. 아래 ${items.length}개 중 핫한 5개를 골라 한국어 카드뉴스를 작성하세요.
+  return `트렌드 에디터. 아래 ${items.length}개 중 핫한 10개를 골라 한국어 카드뉴스를 작성하세요.
 JSON 배열만 출력. 마크다운·코드블록 없음. source_id는 1부터 시작.
-모든 텍스트 필드는 매우 짧게 작성하세요(body 60자, 나머지 30자 이내).
+모든 텍스트 필드는 매우 짧게 작성하세요(body 40자, 나머지 25자 이내).
 
-[{"source_id":N,"title":"제목(15자)","summary":"요약(30자)","body":"본문(60자)","why_trending":"이유(30자)","who_affected":"대상(20자)","tags":["태그1","태그2","태그3","태그4","태그5"],"category":"테크|SNS|푸드|뷰티|패션|라이프|디자인|광고|영상 중 하나"}]
+[{"source_id":N,"title":"제목(15자)","summary":"요약(25자)","body":"본문(40자)","why_trending":"이유(25자)","who_affected":"대상(20자)","tags":["태그1","태그2","태그3","태그4","태그5"],"category":"테크|SNS|푸드|뷰티|패션|라이프|디자인|광고|영상 중 하나"}]
 
 ${list}`
 }
@@ -302,7 +306,7 @@ async function expandBody(
         max_tokens: 700,
         messages: [{ role: 'user', content: prompt }],
       }),
-      signal: AbortSignal.timeout(18000),
+      signal: AbortSignal.timeout(15000),
     })
     if (!res.ok) return null
     const data = await res.json()
@@ -310,75 +314,94 @@ async function expandBody(
   } catch { return null }
 }
 
-// ── 이미지 수집 (Claude 제목 기준) ────────────────────────────
-async function getPexelsImage(keyword: string): Promise<string | null> {
-  const key = process.env.PEXELS_API_KEY
-  if (!key || !keyword) return null
-  try {
-    const res = await fetch(
-      `https://api.pexels.com/v1/search?query=${encodeURIComponent(keyword)}&per_page=1&orientation=landscape`,
-      { headers: { Authorization: key }, signal: AbortSignal.timeout(5000) }
-    )
-    if (!res.ok) return null
-    const data = await res.json()
-    return (data.photos?.[0]?.src?.large2x as string) ?? null
-  } catch { return null }
+// ── 이미지 수집 ───────────────────────────────────────────────
+const CATEGORY_KEYWORD: Record<string, string> = {
+  '테크': 'technology digital innovation',
+  'SNS': 'social media smartphone app',
+  '영상': 'video camera screen',
+  '푸드': 'food restaurant meal',
+  '패션': 'fashion style clothing',
+  '라이프': 'lifestyle wellness',
+  '디자인': 'design creative',
+  '광고': 'advertising marketing',
+  '뷰티': 'beauty cosmetics',
 }
 
-// Claude 제목에서 영어 키워드 추출 (Pexels용)
 function extractEnglishKeyword(claudeTitle: string, fallback: string): string {
-  const english = (claudeTitle.match(/[A-Za-z][A-Za-z0-9 ]{2,}/g) ?? []).join(' ').trim()
-  if (english.length > 3) return english.slice(0, 50)
-  return fallback.replace(/[가-힣]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 50)
+  // Claude 제목에서 영어 단어 추출
+  const english = (claudeTitle.match(/[A-Za-z][A-Za-z0-9 ]{1,}/g) ?? []).join(' ').trim()
+  if (english.length > 2) return english.slice(0, 50)
+  // 소스 제목에서 영어 단어만 추출 (첫 3단어)
+  const fromFallback = fallback
+    .replace(/[가-힣]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 2 && /[A-Za-z]/.test(w))
+    .slice(0, 3)
+    .join(' ')
+    .trim()
+  return fromFallback.slice(0, 50)
 }
 
-// 원본 제목과 Claude 제목이 같은 주제인지 확인 (이미지 관련성 체크)
+// 원본 제목과 Claude 제목이 같은 주제인지 확인
 function titleTopicMatch(originalTitle: string, claudeTitle: string): boolean {
   const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9가-힣]/g, ' ')
   const origWords = new Set(norm(originalTitle).split(/\s+/).filter(w => w.length >= 3))
   const claudeWords = new Set(norm(claudeTitle).split(/\s+/).filter(w => w.length >= 3))
-  const shared = [...origWords].filter(w => claudeWords.has(w))
-  return shared.length > 0
+  return [...origWords].some(w => claudeWords.has(w))
 }
 
 async function collectImages(
   claudeTitle: string,
-  item: CrawledItem
+  item: CrawledItem,
+  category: string = '테크'
 ): Promise<{ mainImg: string | null; gallery: GalleryImage[] }> {
-  // 제목 불일치면 소스 이미지 건너뜀 (Claude 환각으로 YouTube K-pop이 Musk 기사에 연결되는 경우 방지)
   const topicMatches = titleTopicMatch(item.title, claudeTitle)
 
   let mainImg: string | null = null
 
-  // ① 소스 이미지 (제목이 일치할 때만)
+  // ① 소스 이미지 (제목 일치 시에만 — 환각 방지)
   if (topicMatches) {
     if (item.source === 'youtube') {
       const videoId = item.source_url.match(/[?&]v=([^&]+)/)?.[1]
-      mainImg = videoId
-        ? `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`
-        : (item.image_url ?? null)
+      mainImg = videoId ? `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg` : (item.image_url ?? null)
     } else {
       mainImg = await fetchOgImage(item.source_url)
     }
   }
 
-  // ② Bing News 갤러리 (항상 Claude 제목으로 검색)
+  // ② Bing News 갤러리 (항상 Claude 제목으로 검색, 병렬)
   const [fetchedOg, related] = await Promise.all([
-    (mainImg || topicMatches) ? Promise.resolve<string | null>(null) : fetchOgImage(item.source_url),
+    (!mainImg && !topicMatches) ? fetchOgImage(item.source_url) : Promise.resolve<string | null>(null),
     fetchRelatedGalleryImages(claudeTitle, item.source_url, 4),
   ])
   if (!mainImg && fetchedOg) mainImg = fetchedOg
 
-  // ③ Bing News 첫 번째 이미지를 메인으로 (소스가 불일치하거나 이미지 없을 때)
-  if (!mainImg && related.length > 0) mainImg = related[0].url
-
-  // ④ Pexels fallback (Claude 제목의 영어 키워드로 검색)
-  if (!mainImg) {
-    const keyword = extractEnglishKeyword(claudeTitle, item.title)
-    mainImg = await getPexelsImage(keyword)
+  // Bing에서 결과 없으면 영문 키워드로 재시도
+  let finalRelated = related
+  if (related.length === 0) {
+    const engKeyword = extractEnglishKeyword(claudeTitle, item.title).trim()
+    if (engKeyword.length > 2) {
+      finalRelated = await fetchRelatedGalleryImages(engKeyword, item.source_url, 4)
+    }
   }
 
-  // 갤러리 구성 (URL 중복 제거)
+  // ③ Bing 첫 번째 이미지를 메인으로
+  if (!mainImg && finalRelated.length > 0) mainImg = finalRelated[0].url
+
+  // ④ Pexels fallback
+  const engKeyword = extractEnglishKeyword(claudeTitle, item.title).trim()
+  if (!mainImg && engKeyword) {
+    const pexels = await fetchPexelsImages(engKeyword, 1)
+    mainImg = pexels[0]?.url ?? null
+  }
+  // ⑤ 카테고리 기반 최종 폴백 (모든 시도 실패 시)
+  if (!mainImg) {
+    const catKeyword = CATEGORY_KEYWORD[category] ?? 'trending news'
+    const pexels = await fetchPexelsImages(catKeyword, 1)
+    mainImg = pexels[0]?.url ?? null
+  }
+
+  // 갤러리 구성 (URL 중복 제거, 4개 채우기)
   const seenUrls = new Set<string>()
   const gallery: GalleryImage[] = []
 
@@ -392,20 +415,25 @@ async function collectImages(
   if (mainImg && topicMatches) {
     addToGallery({ url: mainImg, source_url: item.source_url, site_name: item.site_name })
   }
-  for (const r of related) addToGallery(r)
+  for (const r of finalRelated) addToGallery(r)
 
-  // Pexels로 4개 채우기
+  // Pexels로 4개 보충
+  if (gallery.length < 4 && engKeyword) {
+    const pexels = await fetchPexelsImages(engKeyword, 4 - gallery.length)
+    for (const p of pexels) addToGallery(p)
+  }
+  // 카테고리 키워드로 나머지 채우기
   if (gallery.length < 4) {
-    const keyword = extractEnglishKeyword(claudeTitle, item.title)
-    const pexels = await fetchPexelsImages(keyword, 4 - gallery.length)
+    const catKeyword = CATEGORY_KEYWORD[category] ?? 'trending news'
+    const pexels = await fetchPexelsImages(catKeyword, 4 - gallery.length)
     for (const p of pexels) addToGallery(p)
   }
 
-  const finalMainImg = mainImg ?? gallery[0]?.url ?? null
-  return { mainImg: finalMainImg, gallery }
+  return { mainImg: mainImg ?? gallery[0]?.url ?? null, gallery }
 }
 
-async function generateWithClaude(items: CrawledItem[]): Promise<{ results: ClaudeResult[], error?: string, _articleErrors?: string[] }> {
+// ── Claude 생성 ───────────────────────────────────────────────
+async function generateWithClaude(items: CrawledItem[]): Promise<{ results: ClaudeResult[], error?: string }> {
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) return { results: [], error: 'ANTHROPIC_API_KEY 미설정' }
   try {
@@ -414,10 +442,10 @@ async function generateWithClaude(items: CrawledItem[]): Promise<{ results: Clau
       headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 1200,
+        max_tokens: 2200,
         messages: [{ role: 'user', content: makeJournalistPrompt(items) }],
       }),
-      signal: AbortSignal.timeout(45000),
+      signal: AbortSignal.timeout(40000),
     })
     if (!res.ok) {
       const errText = await res.text().catch(() => '')
@@ -425,15 +453,14 @@ async function generateWithClaude(items: CrawledItem[]): Promise<{ results: Clau
     }
     const data = await res.json()
     if (data.error) return { results: [], error: `Claude API 오류: ${data.error.message ?? JSON.stringify(data.error)}` }
+
     const text: string = data.content?.[0]?.text ?? ''
     const jsonMatch = text.match(/\[[\s\S]*\]/)
-    if (!jsonMatch) return { results: [], error: `JSON 파싱 실패. Claude 응답 앞 300자: ${text.slice(0, 300)}` }
+    if (!jsonMatch) return { results: [], error: `JSON 파싱 실패. 응답 앞 300자: ${text.slice(0, 300)}` }
+
     let parsed: Record<string, unknown>[]
-    try {
-      parsed = JSON.parse(jsonMatch[0])
-    } catch (e) {
-      return { results: [], error: `JSON.parse 실패: ${String(e)}. 매칭 앞 200자: ${jsonMatch[0].slice(0, 200)}` }
-    }
+    try { parsed = JSON.parse(jsonMatch[0]) }
+    catch (e) { return { results: [], error: `JSON.parse 실패: ${String(e)}` } }
     if (!Array.isArray(parsed)) return { results: [], error: 'Claude 응답이 배열이 아님' }
 
     const seen = new Set<number>()
@@ -444,21 +471,24 @@ async function generateWithClaude(items: CrawledItem[]): Promise<{ results: Clau
         seen.add(id)
         return true
       })
-      .slice(0, 5)
-      .map(p => ({
-        source_id: Number(p.source_id),
-        title: String(p.title ?? '').slice(0, 80),
-        summary: String(p.summary ?? '').slice(0, 200),
-        body: String(p.body ?? '').slice(0, 2000),
-        why_trending: String(p.why_trending ?? '').slice(0, 500),
-        who_affected: String(p.who_affected ?? '').slice(0, 300),
-        tags: Array.isArray(p.tags) ? (p.tags as unknown[]).map(String).slice(0, 7) : extractTags(items[Number(p.source_id) - 1]?.title ?? ''),
-        category: (VALID_CATS.has(String(p.category)) ? String(p.category) : mapCategory(items[Number(p.source_id) - 1]?.title ?? '', items[Number(p.source_id) - 1]?.yt_category_id)) as Category,
-      }))
+      .slice(0, 10)
+      .map(p => {
+        const sid = Number(p.source_id)
+        const src = items[sid - 1]
+        return {
+          source_id: sid,
+          title: String(p.title ?? '').slice(0, 80),
+          summary: String(p.summary ?? '').slice(0, 200),
+          body: String(p.body ?? '').slice(0, 2000),
+          why_trending: String(p.why_trending ?? '').slice(0, 500),
+          who_affected: String(p.who_affected ?? '').slice(0, 300),
+          tags: Array.isArray(p.tags) ? (p.tags as unknown[]).map(String).slice(0, 7) : extractTags(src?.title ?? ''),
+          category: (VALID_CATS.has(String(p.category)) ? String(p.category) : mapCategory(src?.title ?? '', src?.yt_category_id)) as Category,
+        }
+      })
 
     if (results.length === 0) {
-      const ids = parsed.slice(0, 5).map(p => p.source_id)
-      return { results: [], error: `source_id 검증 실패. 파싱 ${parsed.length}개, 샘플: ${JSON.stringify(ids)}, items.length: ${items.length}` }
+      return { results: [], error: `source_id 검증 실패. 파싱 ${parsed.length}개, items.length: ${items.length}` }
     }
     return { results }
   } catch (e) {
@@ -469,23 +499,41 @@ async function generateWithClaude(items: CrawledItem[]): Promise<{ results: Clau
 // ── Vercel Cron ─────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET
-  // Vercel이 CRON_SECRET을 자동 주입하면 검증, 없으면 통과 (로컬 개발용)
   if (secret && req.headers.get('authorization') !== `Bearer ${secret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
-  return runCrawl()
+  return runCrawl('cron')
 }
 
 export async function POST() {
-  return runCrawl()
+  return runCrawl('manual')
 }
 
-async function runCrawl() {
+async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
+  const startedAt = Date.now()
+  log('crawl_start', { trigger })
+
   const SURL = process.env.NEXT_PUBLIC_SUPABASE_URL!
   const SKEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   const sbHeaders = { apikey: SKEY, Authorization: `Bearer ${SKEY}` }
 
-  // 전체 소스 병렬 수집
+  // ── 중복 실행 방지 (크론 재시도 시 이미 성공한 경우 스킵) ──
+  if (trigger === 'cron') {
+    const since = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString()
+    const checkRes = await fetch(
+      `${SURL}/rest/v1/trends?published_at=gte.${encodeURIComponent(since)}&select=id&limit=1`,
+      { headers: sbHeaders }
+    ).catch(() => null)
+    if (checkRes?.ok) {
+      const existing = await checkRes.json().catch(() => [])
+      if (Array.isArray(existing) && existing.length > 0) {
+        log('crawl_skip', { reason: '최근 6시간 이내 트렌드 존재', count: existing.length })
+        return NextResponse.json({ skipped: true, reason: '최근 6시간 내 트렌드 존재' })
+      }
+    }
+  }
+
+  // ── 소스 병렬 수집 ──────────────────────────────────────────
   const [
     ytResult, hn,
     techcrunch, verge, bbc, reuters, aljazeera, japantimes,
@@ -516,12 +564,9 @@ async function runCrawl() {
   ])
 
   const youtube = ytResult.items
-  const youtubeStatus = ytResult.status
 
-  // 소스별 쿼터 적용 후 합산
   const combined = [
-    ...youtube.slice(0, 4),
-    ...hn.slice(0, 4),
+    ...youtube.slice(0, 4), ...hn.slice(0, 4),
     ...techcrunch.slice(0, 2), ...verge.slice(0, 2), ...bbc.slice(0, 2),
     ...reuters.slice(0, 2), ...aljazeera.slice(0, 2), ...japantimes.slice(0, 2),
     ...producthunt.slice(0, 2), ...devto.slice(0, 2),
@@ -533,19 +578,30 @@ async function runCrawl() {
   ]
 
   const selected = dedup(combined).slice(0, 30)
+  log('sources_collected', {
+    youtube: youtube.length, hn: hn.length,
+    rss: selected.length - youtube.length - hn.length,
+    total: selected.length,
+    youtubeStatus: ytResult.status,
+  })
 
   if (selected.length === 0) {
-    return NextResponse.json({ error: 'No trends collected', youtubeStatus }, { status: 502 })
+    log('crawl_error', { reason: '소스 수집 0개' })
+    return NextResponse.json({ error: '소스 수집 실패', youtubeStatus: ytResult.status }, { status: 502 })
   }
 
-  // Claude가 30개 중 10개 선별 + 한국어 기사 작성
-  const { results: claudeResults, error: claudeError, _articleErrors } = await generateWithClaude(selected)
+  // ── Claude 기사 생성 ────────────────────────────────────────
+  const { results: claudeResults, error: claudeError } = await generateWithClaude(selected)
+  log('claude_generated', { count: claudeResults.length, error: claudeError ?? null })
 
   if (claudeResults.length === 0) {
-    return NextResponse.json({ error: claudeError ?? 'Claude generation failed', youtubeStatus, collected: selected.length }, { status: 500 })
+    return NextResponse.json({
+      error: claudeError ?? 'Claude 생성 실패',
+      collected: selected.length,
+    }, { status: 500 })
   }
 
-  // 이미지 없이 먼저 insert (이후 병렬로 이미지+본문 확장)
+  // ── Supabase insert (이미지 없이 먼저) ─────────────────────
   const rows = claudeResults.map((result) => {
     const item = selected[result.source_id - 1]
     const relatedSources: RelatedSource[] = [{ title: item.title, url: item.source_url, site_name: item.site_name }]
@@ -575,50 +631,60 @@ async function runCrawl() {
   })
 
   if (!insertRes.ok) {
-    return NextResponse.json({ error: await insertRes.text(), youtubeStatus }, { status: 500 })
+    const errText = await insertRes.text()
+    log('insert_error', { status: insertRes.status, body: errText.slice(0, 300) })
+    return NextResponse.json({ error: errText }, { status: 500 })
   }
 
-  const data: { id: string; image_url: string | null }[] = await insertRes.json()
+  const inserted: { id: string }[] = await insertRes.json()
+  log('insert_ok', { count: inserted.length })
 
-  // 이미지 수집 + 본문 확장 병렬 실행 후 단일 PATCH
+  // ── 이미지 수집 + 본문 확장 (병렬) ────────────────────────
   const apiKey = process.env.ANTHROPIC_API_KEY
-  if (data.length > 0) {
-    await Promise.all(
-      data.map(async (inserted, i) => {
-        const result = claudeResults[i]
-        const item = selected[result.source_id - 1]
-        const row = rows[i]
+  const imageResults: { title: string; image_url: string | null; gallery_count: number }[] = []
 
-        // 이미지 수집 + 본문 확장 동시 실행
-        const [{ mainImg, gallery }, expandedBody] = await Promise.all([
-          collectImages(result.title, item),
-          apiKey ? expandBody(apiKey, row.title, item.site_name, row.summary || item.description) : Promise.resolve<string | null>(null),
-        ])
+  await Promise.all(
+    inserted.map(async (ins, i) => {
+      const result = claudeResults[i]
+      const item = selected[result.source_id - 1]
+      const row = rows[i]
 
-        await fetch(`${SURL}/rest/v1/trends?id=eq.${inserted.id}`, {
-          method: 'PATCH',
-          headers: { ...sbHeaders, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
-          body: JSON.stringify({
-            image_url: mainImg,
-            gallery_images: gallery,
-            body: expandedBody || row.body || null,
-          }),
-        }).catch(() => null)
-      })
-    )
-  }
+      const [{ mainImg, gallery }, expandedBody] = await Promise.all([
+        collectImages(result.title, item, result.category),
+        apiKey ? expandBody(apiKey, row.title, item.site_name, row.summary || item.description) : Promise.resolve<string | null>(null),
+      ])
+
+      imageResults.push({ title: row.title, image_url: mainImg, gallery_count: gallery.length })
+
+      await fetch(`${SURL}/rest/v1/trends?id=eq.${ins.id}`, {
+        method: 'PATCH',
+        headers: { ...sbHeaders, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+        body: JSON.stringify({
+          image_url: mainImg,
+          gallery_images: gallery,
+          body: expandedBody || row.body || null,
+        }),
+      }).catch(e => log('patch_error', { id: ins.id, error: String(e) }))
+    })
+  )
+
+  const elapsed = Date.now() - startedAt
+  log('crawl_done', {
+    trigger, elapsed_ms: elapsed,
+    count: inserted.length,
+    images: imageResults,
+  })
 
   return NextResponse.json({
     success: true,
-    count: data.length,
-    withImages: claudeResults.length,
-    collected: selected.length,
+    count: inserted.length,
+    elapsed_ms: elapsed,
+    trends: imageResults,
     sources: {
-      youtube: youtube.length, hn: hn.length,
+      youtube: youtube.length,
+      hn: hn.length,
       rss: selected.length - youtube.length - hn.length,
     },
-    hasYoutube: youtube.length > 0,
-    youtubeStatus,
-    articleErrors: _articleErrors?.length ? _articleErrors : undefined,
+    youtubeStatus: ytResult.status,
   })
 }

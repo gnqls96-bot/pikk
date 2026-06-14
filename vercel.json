@@ -3,6 +3,10 @@
     {
       "path": "/api/generate-trends-crawl",
       "schedule": "0 21 * * *"
+    },
+    {
+      "path": "/api/generate-trends-crawl",
+      "schedule": "30 22 * * *"
     }
   ]
 }

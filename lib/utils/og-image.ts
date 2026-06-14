@@ -17,7 +17,7 @@ export async function fetchOgImage(url: string): Promise<string | null> {
         'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
         Accept: 'text/html,application/xhtml+xml',
       },
-      signal: AbortSignal.timeout(7000),
+      signal: AbortSignal.timeout(6000),
       redirect: 'follow',
     })
     if (!res.ok) return null
@@ -56,7 +56,7 @@ export async function fetchRelatedGalleryImages(
     const rssUrl = `https://www.bing.com/news/search?q=${encodeURIComponent(query)}&format=rss&mkt=ko-KR`
     const res = await fetch(rssUrl, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(7000),
     })
     if (!res.ok) return []
     const xml = await res.text()
