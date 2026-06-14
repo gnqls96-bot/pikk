@@ -15,7 +15,8 @@ interface CrawledItem {
   yt_category_id?: string
 }
 
-interface KoreanContent {
+interface ClaudeResult {
+  source_id: number
   title: string
   summary: string
   body: string
@@ -25,7 +26,7 @@ interface KoreanContent {
   category: Category
 }
 
-// ── Category mapping ───────────────────────────────────────────
+// ── Category mapping ────────────────────────────────────────────
 const YT_CATEGORY_MAP: Record<string, Category> = {
   '1': '영상', '10': '영상', '20': '라이프', '22': 'SNS', '23': 'SNS',
   '24': 'SNS', '26': '뷰티', '28': '테크',
@@ -42,12 +43,15 @@ const KEYWORD_CATEGORY: [string[], Category][] = [
   [['YouTube', 'video', 'film', 'movie', 'music', 'streaming', 'Netflix', 'Disney',
     'animation', 'K-pop', 'kpop', '유튜브', '영상', '뮤직', '노래', '드라마'], '영상'],
   [['food', 'restaurant', 'recipe', 'eating', 'coffee', 'drink', 'meal', 'cuisine',
-    'pizza', 'sushi', 'chocolate'], '푸드'],
-  [['fashion', 'style', 'clothing', 'outfit', 'brand', 'luxury', 'shoes', 'dress'], '패션'],
+    'pizza', 'sushi', 'chocolate', 'chef'], '푸드'],
+  [['fashion', 'style', 'clothing', 'outfit', 'brand', 'luxury', 'shoes', 'dress',
+    'runway', 'couture', 'streetwear'], '패션'],
   [['health', 'wellness', 'fitness', 'workout', 'sleep', 'mental', 'exercise', 'yoga',
     'nutrition', 'diet', 'meditation'], '라이프'],
-  [['design', 'graphic', 'UI', 'UX', 'logo', 'typography', 'visual', 'illustration'], '디자인'],
-  [['marketing', 'advertising', 'brand', 'campaign', 'commercial', 'promotion'], '광고'],
+  [['design', 'graphic', 'UI', 'UX', 'logo', 'typography', 'visual', 'illustration',
+    'Figma', 'creative'], '디자인'],
+  [['marketing', 'advertising', 'brand', 'campaign', 'commercial', 'promotion',
+    'ad', 'influencer'], '광고'],
   [['beauty', 'makeup', 'skincare', 'cosmetic', 'haircare', 'nail', '뷰티', '화장', '스킨'], '뷰티'],
 ]
 
@@ -66,12 +70,10 @@ function mapCategory(text: string, ytCategoryId?: string): Category {
 
 function extractTags(title: string): string[] {
   return [...new Set(
-    title
-      .split(/\s+/)
+    title.split(/\s+/)
       .filter(w => w.length > 3 && /[A-Z가-힣]/.test(w[0]))
       .map(w => w.replace(/[^a-zA-Z0-9가-힣]/g, ''))
-      .filter(w => w.length > 2)
-      .slice(0, 5)
+      .filter(w => w.length > 2).slice(0, 5)
   )]
 }
 
@@ -79,7 +81,7 @@ function calcHeatFromLog(value: number, base = 50): number {
   return Math.min(99, Math.max(40, base + Math.floor(Math.log10(value + 1) * 12)))
 }
 
-// ── YouTube KR Trending ─────────────────────────────────────────
+// ── YouTube KR ──────────────────────────────────────────────────
 async function fetchYouTubeTrending(): Promise<{ items: CrawledItem[], status: string }> {
   const key = process.env.YOUTUBE_API_KEY
   if (!key) return { items: [], status: 'YOUTUBE_API_KEY 환경변수 미설정' }
@@ -89,69 +91,48 @@ async function fetchYouTubeTrending(): Promise<{ items: CrawledItem[], status: s
       { signal: AbortSignal.timeout(10000) }
     )
     if (!res.ok) {
-      const errText = await res.text().catch(() => '')
-      return { items: [], status: `YouTube HTTP ${res.status}: ${errText.slice(0, 120)}` }
+      const err = await res.text().catch(() => '')
+      return { items: [], status: `YouTube HTTP ${res.status}: ${err.slice(0, 120)}` }
     }
     const data = await res.json()
-    if (data.error) {
-      return { items: [], status: `YouTube API 오류: ${data.error.message ?? data.error.status}` }
-    }
+    if (data.error) return { items: [], status: `YouTube API 오류: ${data.error.message ?? data.error.status}` }
     const items = (data.items ?? []).map((item: {
       id: string
       snippet: {
-        title: string
-        description: string
-        channelTitle: string
-        categoryId: string
+        title: string; description: string; channelTitle: string; categoryId: string
         thumbnails: { maxres?: { url: string }; high?: { url: string }; medium?: { url: string } }
       }
       statistics: { viewCount?: string }
-    }) => {
-      const viewCount = parseInt(item.statistics?.viewCount ?? '0')
-      return {
-        title: item.snippet.title,
-        description: (item.snippet.description ?? '').split('\n')[0].slice(0, 300),
-        image_url:
-          item.snippet.thumbnails?.maxres?.url ??
-          item.snippet.thumbnails?.high?.url ??
-          item.snippet.thumbnails?.medium?.url ??
-          null,
-        source_url: `https://www.youtube.com/watch?v=${item.id}`,
-        site_name: item.snippet.channelTitle ?? 'YouTube',
-        heat_score: calcHeatFromLog(viewCount),
-        source: 'youtube' as const,
-        yt_category_id: item.snippet.categoryId,
-      }
-    })
+    }) => ({
+      title: item.snippet.title,
+      description: (item.snippet.description ?? '').split('\n')[0].slice(0, 300),
+      image_url: item.snippet.thumbnails?.maxres?.url ?? item.snippet.thumbnails?.high?.url ?? item.snippet.thumbnails?.medium?.url ?? null,
+      source_url: `https://www.youtube.com/watch?v=${item.id}`,
+      site_name: item.snippet.channelTitle ?? 'YouTube',
+      heat_score: calcHeatFromLog(parseInt(item.statistics?.viewCount ?? '0')),
+      source: 'youtube' as const,
+      yt_category_id: item.snippet.categoryId,
+    }))
     return { items, status: `OK: ${items.length}개 수집` }
   } catch (e) {
     return { items: [], status: `연결 오류: ${String(e).slice(0, 80)}` }
   }
 }
 
-// ── Hacker News Top Stories ─────────────────────────────────────
+// ── Hacker News ─────────────────────────────────────────────────
 async function fetchHNTop(): Promise<CrawledItem[]> {
   try {
-    const idsRes = await fetch(
-      'https://hacker-news.firebaseio.com/v0/topstories.json',
-      { signal: AbortSignal.timeout(8000) }
-    )
+    const idsRes = await fetch('https://hacker-news.firebaseio.com/v0/topstories.json', { signal: AbortSignal.timeout(8000) })
     const ids: number[] = await idsRes.json()
     const items = await Promise.all(
       ids.slice(0, 30).map(async (id) => {
         try {
-          const res = await fetch(
-            `https://hacker-news.firebaseio.com/v0/item/${id}.json`,
-            { signal: AbortSignal.timeout(5000) }
-          )
-          return res.json()
+          return (await fetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`, { signal: AbortSignal.timeout(5000) })).json()
         } catch { return null }
       })
     )
     return items
-      .filter((item): item is NonNullable<typeof item> =>
-        item?.url && item.score >= 80 && item.title
-      )
+      .filter((item): item is NonNullable<typeof item> => item?.url && item.score >= 80 && item.title)
       .slice(0, 6)
       .map((item) => {
         let siteName = 'Hacker News'
@@ -166,31 +147,21 @@ async function fetchHNTop(): Promise<CrawledItem[]> {
           source: 'hn' as const,
         }
       })
-  } catch {
-    return []
-  }
+  } catch { return [] }
 }
 
-// ── RSS / Atom feed parser ──────────────────────────────────────
+// ── RSS / Atom ──────────────────────────────────────────────────
 function cleanText(s: string): string {
-  return s
-    .replace(/<[^>]+>/g, '')
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
-    .trim()
+  return s.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ').trim()
 }
 
 function parseFeedXml(xml: string, siteName: string): Omit<CrawledItem, 'source'>[] {
   const isAtom = xml.includes('<feed')
-  const entryRe = isAtom
-    ? /<entry[^>]*>([\s\S]*?)<\/entry>/gi
-    : /<item[^>]*>([\s\S]*?)<\/item>/gi
+  const entryRe = isAtom ? /<entry[^>]*>([\s\S]*?)<\/entry>/gi : /<item[^>]*>([\s\S]*?)<\/item>/gi
   const results: Omit<CrawledItem, 'source'>[] = []
   for (const match of [...xml.matchAll(entryRe)].slice(0, 6)) {
     const c = match[1]
-    const title = cleanText(
-      c.match(/<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i)?.[1] ?? ''
-    )
+    const title = cleanText(c.match(/<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i)?.[1] ?? '')
     if (!title) continue
     const link = isAtom
       ? (c.match(/<link[^>]+href=["']([^"']+)["']/i)?.[1] ?? '')
@@ -218,14 +189,61 @@ async function fetchRSSFeed(url: string, siteName: string): Promise<CrawledItem[
       signal: AbortSignal.timeout(8000),
     })
     if (!res.ok) return []
-    const xml = await res.text()
-    return parseFeedXml(xml, siteName).map(item => ({ ...item, source: 'rss' as const }))
-  } catch {
-    return []
-  }
+    return parseFeedXml(await res.text(), siteName).map(item => ({ ...item, source: 'rss' as const }))
+  } catch { return [] }
 }
 
-// ── Pexels image fallback ───────────────────────────────────────
+// ── Reddit JSON API ─────────────────────────────────────────────
+async function fetchRedditHot(subreddit: string, minScore = 300): Promise<CrawledItem[]> {
+  try {
+    const res = await fetch(`https://www.reddit.com/r/${subreddit}/hot.json?limit=15`, {
+      headers: { 'User-Agent': 'PikkBot/1.0 (+https://pikk.app)', Accept: 'application/json' },
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) return []
+    const data = await res.json()
+    const children = (data?.data?.children ?? []) as { data: Record<string, unknown> }[]
+    return children
+      .map(c => c.data)
+      .filter(p => !p.over_18 && !p.stickied && p.url && Number(p.score) >= minScore)
+      .slice(0, 4)
+      .map(p => {
+        const thumb = String(p.thumbnail ?? '')
+        return {
+          title: String(p.title ?? '').slice(0, 200),
+          description: String(p.selftext ?? '').slice(0, 200),
+          image_url: thumb.startsWith('http') ? thumb : null,
+          source_url: p.is_self ? `https://www.reddit.com${String(p.permalink)}` : String(p.url ?? ''),
+          site_name: `r/${subreddit}`,
+          heat_score: calcHeatFromLog(Number(p.score ?? 0), 45),
+          source: 'rss' as const,
+        }
+      })
+  } catch { return [] }
+}
+
+// ── Dev.to API ──────────────────────────────────────────────────
+async function fetchDevTo(): Promise<CrawledItem[]> {
+  try {
+    const res = await fetch('https://dev.to/api/articles?top=7&per_page=6', {
+      headers: { 'User-Agent': 'PikkBot/1.0' },
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) return []
+    const articles: Array<{ title: string; description: string; url: string; cover_image: string | null; public_reactions_count: number }> = await res.json()
+    return articles.map(a => ({
+      title: a.title,
+      description: a.description ?? '',
+      image_url: a.cover_image,
+      source_url: a.url,
+      site_name: 'Dev.to',
+      heat_score: calcHeatFromLog(a.public_reactions_count ?? 0, 50),
+      source: 'rss' as const,
+    }))
+  } catch { return [] }
+}
+
+// ── Pexels fallback ─────────────────────────────────────────────
 async function getPexelsImage(keyword: string): Promise<string | null> {
   const key = process.env.PEXELS_API_KEY
   if (!key) return null
@@ -237,12 +255,10 @@ async function getPexelsImage(keyword: string): Promise<string | null> {
     if (!res.ok) return null
     const data = await res.json()
     return (data.photos?.[0]?.src?.large2x as string) ?? null
-  } catch {
-    return null
-  }
+  } catch { return null }
 }
 
-// ── Deduplication ───────────────────────────────────────────────
+// ── Dedup ───────────────────────────────────────────────────────
 function normalize(s: string) {
   return s.toLowerCase().replace(/[^a-z0-9가-힣]/g, ' ').replace(/\s+/g, ' ').trim()
 }
@@ -265,92 +281,85 @@ function dedup(items: CrawledItem[]): CrawledItem[] {
   return result
 }
 
-// ── Claude Sonnet 4.6 journalist content generation ─────────────
-function makePrompt(count: number, itemsJson: string): string {
-  return `당신은 전세계 트렌드를 분석하는 최고의 저널리스트입니다. 한국 독자들이 글로벌 트렌드를 깊이 이해할 수 있도록 심층 분석 기사를 작성합니다.
+// ── Claude Sonnet 4.6 저널리스트 — 선별 + 기사 작성 ─────────────
+function makeJournalistPrompt(items: CrawledItem[]): string {
+  const list = items
+    .map((item, i) =>
+      `${i + 1}. [${item.site_name}] ${item.title}${item.description ? ` — ${item.description.slice(0, 120)}` : ''}`
+    )
+    .join('\n')
 
-다음 ${count}개 트렌드를 분석해 JSON 배열만 출력하세요. 마크다운·설명 없이 순수 JSON만.
+  return `당신은 전세계 트렌드를 분석하는 최고의 저널리스트입니다.
+아래 수집된 ${items.length}개의 글로벌 뉴스·트렌드 중에서 지금 진짜 핫한 10개를 선별하고, 깊이 있는 한국어 심층 기사를 작성하세요.
 
-각 항목 형식:
-{"title":"독자가 클릭하고 싶은 강렬한 한국어 제목 (20-35자)","summary":"핵심 한 줄 요약 (50-80자)","body":"최소 1000자 한국어 심층 본문. 반드시 포함: 1)배경과 맥락 2)왜 지금 뜨는가(구체적 수치·사례) 3)글로벌 동향과 주요 플레이어 4)한국 시장 의미와 영향 5)앞으로의 전망. 자연스럽고 읽기 쉬운 한국어로.","why_trending":"왜 지금 이 트렌드가 폭발적으로 주목받는가를 3줄 이상 구체적으로","who_affected":"이 트렌드에 주목해야 하는 사람들 구체적으로 (업계 관계자·소비자·투자자 등)","tags":["한국어태그1","한국어태그2","한국어태그3","한국어태그4","한국어태그5"],"category":"테크|SNS|푸드|뷰티|패션|라이프|디자인|광고|영상 중 하나"}
+선별 기준:
+① 지금 전세계에서 실제 화제가 되는 글로벌 파급력
+② 한국 독자가 알아야 할 중요도
+③ 테크·문화·경제·사회 등 다양한 주제 균형
 
-분석할 트렌드:
-${itemsJson}`
+반드시 JSON 배열만 출력하세요. 마크다운·설명 없이 순수 JSON만.
+source_id는 아래 목록의 번호 (1부터 시작).
+
+[{
+  "source_id": 번호,
+  "title": "독자가 클릭하고 싶은 강렬한 한국어 제목 (20-35자, 구체적·후킹)",
+  "summary": "핵심 한 줄 요약 (50자 이내)",
+  "body": "최소 800자 한국어 심층 본문. 반드시 포함: 1)배경과 맥락 2)왜 지금 전세계에서 주목받는가(구체적 수치·사례·브랜드명) 3)글로벌 주요 플레이어와 동향 4)한국 시장에서의 의미와 영향 5)앞으로의 전망과 핵심 인사이트. 자연스러운 한국어로.",
+  "why_trending": "왜 지금 전세계에서 폭발적으로 주목받는가를 3줄 이상 구체적으로",
+  "who_affected": "이 트렌드에 주목해야 하는 사람들 (업계인·소비자·투자자 등 구체적으로)",
+  "tags": ["한국어태그1","한국어태그2","한국어태그3","한국어태그4","한국어태그5"],
+  "category": "테크|SNS|푸드|뷰티|패션|라이프|디자인|광고|영상 중 정확히 하나"
+}]
+
+수집된 트렌드:
+${list}`
 }
 
-function makeFallback(items: CrawledItem[]): KoreanContent[] {
-  return items.map((item) => ({
-    title: item.title.slice(0, 60),
-    summary: item.description.slice(0, 100) || `${item.site_name}의 트렌드`,
-    body: item.description.slice(0, 500) || '',
-    why_trending: '',
-    who_affected: '',
-    tags: extractTags(item.title),
-    category: mapCategory(item.title + ' ' + item.description, item.yt_category_id),
-  }))
-}
-
-async function callClaude(batch: CrawledItem[]): Promise<KoreanContent[]> {
-  const apiKey = process.env.ANTHROPIC_API_KEY!
-  const itemsJson = JSON.stringify(
-    batch.map((item, i) => ({
-      id: i + 1,
-      title: item.title,
-      description: item.description.slice(0, 250),
-      source: item.site_name,
-      type: item.source,
-    }))
-  )
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 8192,
-      messages: [{ role: 'user', content: makePrompt(batch.length, itemsJson) }],
-    }),
-    signal: AbortSignal.timeout(50000),
-  })
-  if (!res.ok) throw new Error(`Anthropic HTTP ${res.status}`)
-  const data = await res.json()
-  const text: string = data.content?.[0]?.text ?? ''
-  const jsonMatch = text.match(/\[[\s\S]*\]/)
-  if (!jsonMatch) throw new Error('No JSON array in response')
-  const parsed: Record<string, unknown>[] = JSON.parse(jsonMatch[0])
-  if (!Array.isArray(parsed) || parsed.length !== batch.length) throw new Error('Count mismatch')
-  return parsed.map((p, i) => ({
-    title: String(p.title ?? batch[i].title).slice(0, 80),
-    summary: String(p.summary ?? '').slice(0, 200),
-    body: String(p.body ?? '').slice(0, 2000),
-    why_trending: String(p.why_trending ?? '').slice(0, 500),
-    who_affected: String(p.who_affected ?? '').slice(0, 300),
-    tags: Array.isArray(p.tags) ? (p.tags as unknown[]).map(String).slice(0, 7) : extractTags(batch[i].title),
-    category: (VALID_CATS.has(String(p.category))
-      ? String(p.category)
-      : mapCategory(batch[i].title + ' ' + batch[i].description, batch[i].yt_category_id)) as Category,
-  }))
-}
-
-async function generateKoreanContent(items: CrawledItem[]): Promise<KoreanContent[]> {
-  if (!process.env.ANTHROPIC_API_KEY) return makeFallback(items)
+async function generateWithClaude(items: CrawledItem[]): Promise<ClaudeResult[]> {
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) return []
   try {
-    // 5개씩 병렬 처리 (토큰 한도 내 처리)
-    const mid = Math.ceil(items.length / 2)
-    const [b1, b2] = await Promise.all([
-      callClaude(items.slice(0, mid)),
-      items.length > mid ? callClaude(items.slice(mid)) : Promise.resolve([] as KoreanContent[]),
-    ])
-    return [...b1, ...b2]
-  } catch {
-    return makeFallback(items)
-  }
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 8192,
+        messages: [{ role: 'user', content: makeJournalistPrompt(items) }],
+      }),
+      signal: AbortSignal.timeout(50000),
+    })
+    if (!res.ok) return []
+    const data = await res.json()
+    const text: string = data.content?.[0]?.text ?? ''
+    const jsonMatch = text.match(/\[[\s\S]*\]/)
+    if (!jsonMatch) return []
+    const parsed: Record<string, unknown>[] = JSON.parse(jsonMatch[0])
+    if (!Array.isArray(parsed)) return []
+
+    const seen = new Set<number>()
+    return parsed
+      .filter(p => {
+        const id = Number(p.source_id)
+        if (!Number.isInteger(id) || id < 1 || id > items.length || seen.has(id)) return false
+        seen.add(id)
+        return true
+      })
+      .slice(0, 10)
+      .map(p => ({
+        source_id: Number(p.source_id),
+        title: String(p.title ?? '').slice(0, 80),
+        summary: String(p.summary ?? '').slice(0, 200),
+        body: String(p.body ?? '').slice(0, 2000),
+        why_trending: String(p.why_trending ?? '').slice(0, 500),
+        who_affected: String(p.who_affected ?? '').slice(0, 300),
+        tags: Array.isArray(p.tags) ? (p.tags as unknown[]).map(String).slice(0, 7) : extractTags(items[Number(p.source_id) - 1]?.title ?? ''),
+        category: (VALID_CATS.has(String(p.category)) ? String(p.category) : mapCategory(items[Number(p.source_id) - 1]?.title ?? '')) as Category,
+      }))
+  } catch { return [] }
 }
 
-// ── Vercel Cron (매일 06:00 KST = 21:00 UTC) ───────────────────
+// ── Vercel Cron ─────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
   if (req.headers.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -367,38 +376,74 @@ async function runCrawl() {
   const SKEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   const sbHeaders = { apikey: SKEY, Authorization: `Bearer ${SKEY}` }
 
-  // 모든 소스 병렬 수집
-  const [ytResult, hn, techcrunch, verge, bbc] = await Promise.all([
+  // 전체 소스 병렬 수집
+  const [
+    ytResult, hn,
+    techcrunch, verge, bbc, reuters, aljazeera, japantimes,
+    producthunt, devto,
+    mediumTech, mediumDesign, mediumBusiness, mediumCulture,
+    redditWorld, redditTech, redditScience, redditBusiness, redditFashion, redditFood,
+  ] = await Promise.all([
     fetchYouTubeTrending(),
     fetchHNTop(),
     fetchRSSFeed('https://techcrunch.com/feed/', 'TechCrunch'),
     fetchRSSFeed('https://www.theverge.com/rss/index.xml', 'The Verge'),
     fetchRSSFeed('https://feeds.bbci.co.uk/news/technology/rss.xml', 'BBC Tech'),
+    fetchRSSFeed('https://feeds.reuters.com/reuters/topNews', 'Reuters'),
+    fetchRSSFeed('https://www.aljazeera.com/xml/rss/all.xml', 'Al Jazeera'),
+    fetchRSSFeed('https://www.japantimes.co.jp/feed/', 'Japan Times'),
+    fetchRSSFeed('https://www.producthunt.com/feed', 'Product Hunt'),
+    fetchDevTo(),
+    fetchRSSFeed('https://medium.com/feed/tag/technology', 'Medium'),
+    fetchRSSFeed('https://medium.com/feed/tag/design', 'Medium'),
+    fetchRSSFeed('https://medium.com/feed/tag/business', 'Medium'),
+    fetchRSSFeed('https://medium.com/feed/tag/culture', 'Medium'),
+    fetchRedditHot('worldnews', 1000),
+    fetchRedditHot('technology', 500),
+    fetchRedditHot('science', 500),
+    fetchRedditHot('business', 300),
+    fetchRedditHot('fashion', 100),
+    fetchRedditHot('food', 100),
   ])
+
   const youtube = ytResult.items
   const youtubeStatus = ytResult.status
 
+  // 소스별 쿼터 적용 후 합산
   const combined = [
     ...youtube.slice(0, 4),
-    ...hn.slice(0, 3),
-    ...techcrunch.slice(0, 2),
-    ...verge.slice(0, 2),
-    ...bbc.slice(0, 2),
+    ...hn.slice(0, 4),
+    ...techcrunch.slice(0, 2), ...verge.slice(0, 2), ...bbc.slice(0, 2),
+    ...reuters.slice(0, 2), ...aljazeera.slice(0, 2), ...japantimes.slice(0, 2),
+    ...producthunt.slice(0, 2), ...devto.slice(0, 2),
+    ...mediumTech.slice(0, 1), ...mediumDesign.slice(0, 1),
+    ...mediumBusiness.slice(0, 1), ...mediumCulture.slice(0, 1),
+    ...redditWorld.slice(0, 2), ...redditTech.slice(0, 2),
+    ...redditScience.slice(0, 1), ...redditBusiness.slice(0, 1),
+    ...redditFashion.slice(0, 1), ...redditFood.slice(0, 1),
   ]
-  const selected = dedup(combined).slice(0, 10)
+
+  const selected = dedup(combined).slice(0, 30)
 
   if (selected.length === 0) {
-    return NextResponse.json(
-      { error: 'No trends collected from any source', youtubeStatus },
-      { status: 502 }
-    )
+    return NextResponse.json({ error: 'No trends collected', youtubeStatus }, { status: 502 })
   }
 
-  // 이미지 수집 (YouTube 썸네일 + Pexels fallback)
+  // Claude가 30개 중 10개 선별 + 한국어 기사 작성
+  const claudeResults = await generateWithClaude(selected)
+
+  if (claudeResults.length === 0) {
+    return NextResponse.json({ error: 'Claude generation failed', youtubeStatus, collected: selected.length }, { status: 500 })
+  }
+
+  // 선별된 항목에 이미지·메타 붙이기
   const rows = await Promise.all(
-    selected.map(async (item) => {
+    claudeResults.map(async (result) => {
+      const item = selected[result.source_id - 1]
+
       let imageUrl = item.image_url
       const galleryImages: GalleryImage[] = []
+
       if (imageUrl) {
         galleryImages.push({ url: imageUrl, source_url: item.source_url, site_name: item.site_name })
       } else {
@@ -409,47 +454,33 @@ async function runCrawl() {
           galleryImages.push({ url: pexUrl, source_url: 'https://www.pexels.com', site_name: 'Pexels' })
         }
       }
+
       const related: RelatedSource[] = [{ title: item.title, url: item.source_url, site_name: item.site_name }]
+
       return {
+        title: result.title,
+        summary: result.summary,
         original_title: item.title,
+        body: result.body || null,
+        why_trending: result.why_trending || null,
+        who_affected: result.who_affected || null,
+        heat_score: item.heat_score,
+        category: result.category,
+        tags: result.tags,
         source_url: item.source_url,
         related_sources: related,
         image_search_keyword: item.title.slice(0, 60),
         image_url: imageUrl,
         gallery_images: galleryImages,
-        heat_score: item.heat_score,
-        who_affected: null as string | null,
         published_at: new Date().toISOString(),
-        // Claude가 덮어쓸 필드 (placeholder)
-        title: item.title,
-        summary: '',
-        body: null as string | null,
-        why_trending: '',
-        tags: [] as string[],
-        category: mapCategory(item.title + ' ' + item.description, item.yt_category_id) as Category,
       }
     })
   )
 
-  // Claude Sonnet 4.6으로 한국어 심층 콘텐츠 생성
-  const koreanContents = await generateKoreanContent(selected)
-
-  // 이미지·메타 + Claude 콘텐츠 합성
-  const finalRows = rows.map((row, i) => ({
-    ...row,
-    title: koreanContents[i].title,
-    summary: koreanContents[i].summary,
-    body: koreanContents[i].body || null,
-    why_trending: koreanContents[i].why_trending || null,
-    who_affected: koreanContents[i].who_affected || null,
-    tags: koreanContents[i].tags,
-    category: koreanContents[i].category,
-  }))
-
   const insertRes = await fetch(`${SURL}/rest/v1/trends`, {
     method: 'POST',
     headers: { ...sbHeaders, 'Content-Type': 'application/json', Prefer: 'return=representation' },
-    body: JSON.stringify(finalRows),
+    body: JSON.stringify(rows),
   })
 
   if (!insertRes.ok) {
@@ -462,10 +493,10 @@ async function runCrawl() {
     success: true,
     count: data.length,
     withImages: data.filter(r => r.image_url).length,
+    collected: selected.length,
     sources: {
-      youtube: Math.min(youtube.length, 4),
-      hn: Math.min(hn.length, 3),
-      rss: data.length - Math.min(youtube.length, 4) - Math.min(hn.length, 3),
+      youtube: youtube.length, hn: hn.length,
+      rss: selected.length - youtube.length - hn.length,
     },
     hasYoutube: youtube.length > 0,
     youtubeStatus,
