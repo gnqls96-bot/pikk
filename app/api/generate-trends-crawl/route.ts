@@ -1,6 +1,5 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import type { Category, GalleryImage, RelatedSource } from '@/lib/types'
-import { translateToKorean, translateTags } from '@/lib/utils/translate'
 
 export const maxDuration = 60
 
@@ -277,8 +276,107 @@ function dedup(items: CrawledItem[]): CrawledItem[] {
   return result
 }
 
-// ── Main handler ───────────────────────────────────────────────
+// ── Claude Sonnet Korean content generation ───────────────────
+const VALID_CATS = new Set<string>([
+  '푸드', '뷰티', 'SNS', '패션', '테크', '라이프', '디자인', '광고', '영상',
+])
+
+interface KoreanContent {
+  title: string
+  summary: string
+  body: string
+  tags: string[]
+  category: Category
+}
+
+async function generateKoreanContent(items: CrawledItem[]): Promise<KoreanContent[]> {
+  const fallback = (): KoreanContent[] =>
+    items.map((item) => ({
+      title: item.title.slice(0, 60),
+      summary: item.description.slice(0, 100) || `${item.site_name}의 트렌드`,
+      body: item.description.slice(0, 500) || '',
+      tags: extractTags(item.title),
+      category: mapCategory(item.title + ' ' + item.description, item.yt_category_id),
+    }))
+
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) return fallback()
+
+  const itemsJson = JSON.stringify(
+    items.map((item, i) => ({
+      id: i + 1,
+      title: item.title,
+      description: item.description.slice(0, 200),
+      source: item.site_name,
+      type: item.source,
+    }))
+  )
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 4096,
+        messages: [
+          {
+            role: 'user',
+            content: `한국 트렌드 미디어 에디터로서 다음 ${items.length}개 글로벌 트렌드를 한국 독자용으로 재작성하세요.
+반드시 JSON 배열만 출력하세요. 마크다운·설명 텍스트 없이 순수 JSON만.
+
+출력 형식 (${items.length}개 항목):
+[{"title":"독자가 클릭하고 싶은 후킹 제목 (20-30자 한국어)","summary":"핵심 한 줄 요약 (40-60자)","body":"400-500자 한국어 본문. 왜 지금 화제인지·글로벌 맥락·한국 시장 의미를 포함해 자연스럽게 작성","tags":["한국어태그1","한국어태그2","한국어태그3","한국어태그4"],"category":"테크|SNS|푸드|뷰티|패션|라이프|디자인|광고|영상 중 정확히 하나"}]
+
+분석할 트렌드:
+${itemsJson}`,
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(30000),
+    })
+
+    if (!res.ok) return fallback()
+
+    const data = await res.json()
+    const text: string = data.content?.[0]?.text ?? ''
+    const jsonMatch = text.match(/\[[\s\S]*\]/)
+    if (!jsonMatch) return fallback()
+
+    const parsed: Record<string, unknown>[] = JSON.parse(jsonMatch[0])
+    if (!Array.isArray(parsed) || parsed.length !== items.length) return fallback()
+
+    return parsed.map((p, i) => ({
+      title: String(p.title ?? items[i].title).slice(0, 80),
+      summary: String(p.summary ?? '').slice(0, 150),
+      body: String(p.body ?? '').slice(0, 700),
+      tags: Array.isArray(p.tags) ? (p.tags as unknown[]).map(String).slice(0, 5) : extractTags(items[i].title),
+      category: (VALID_CATS.has(String(p.category))
+        ? String(p.category)
+        : mapCategory(items[i].title + ' ' + items[i].description, items[i].yt_category_id)) as Category,
+    }))
+  } catch {
+    return fallback()
+  }
+}
+
+// ── Vercel Cron (매일 06:00 KST = 21:00 UTC) ──────────────────
+export async function GET(req: NextRequest) {
+  if (req.headers.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+  return runCrawl()
+}
+
 export async function POST() {
+  return runCrawl()
+}
+
+async function runCrawl() {
   const SURL = process.env.NEXT_PUBLIC_SUPABASE_URL!
   const SKEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   const sbHeaders = { apikey: SKEY, Authorization: `Bearer ${SKEY}` }
@@ -360,24 +458,24 @@ export async function POST() {
     })
   )
 
-  // Translate HN and RSS items (YouTube KR items are already in Korean)
-  const translatedRows = await Promise.all(
-    rows.map(async (row, i) => {
-      const item = selected[i]
-      if (item.source === 'youtube') return row
-      const [title, summary, tags] = await Promise.all([
-        translateToKorean(row.title),
-        translateToKorean(row.summary),
-        translateTags(row.tags),
-      ])
-      return { ...row, title, summary, tags }
-    })
-  )
+  // Claude Sonnet 4.6으로 한국어 콘텐츠 생성
+  const koreanContents = await generateKoreanContent(selected)
+
+  // 원본 row의 이미지·메타와 Claude 생성 한국어 콘텐츠 합성
+  const finalRows = rows.map((row, i) => ({
+    ...row,
+    title: koreanContents[i].title,
+    summary: koreanContents[i].summary,
+    body: koreanContents[i].body || row.body,
+    tags: koreanContents[i].tags,
+    category: koreanContents[i].category,
+    // image_search_keyword는 이미지 검색용 영어 원제 유지
+  }))
 
   const insertRes = await fetch(`${SURL}/rest/v1/trends`, {
     method: 'POST',
     headers: { ...sbHeaders, 'Content-Type': 'application/json', Prefer: 'return=representation' },
-    body: JSON.stringify(translatedRows),
+    body: JSON.stringify(finalRows),
   })
 
   if (!insertRes.ok) {
