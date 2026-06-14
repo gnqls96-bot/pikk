@@ -40,6 +40,11 @@ export default function AdminPage() {
   const [regenProgress, setRegenProgress] = useState({ done: 0, total: 0 })
   const [regenDone, setRegenDone] = useState(false)
 
+  // 이미지 재수집
+  const [refreshingImages, setRefreshingImages] = useState(false)
+  const [imageRefreshResult, setImageRefreshResult] = useState<{ updated: { title: string; gallery_count: number }[] } | null>(null)
+  const [imageRefreshError, setImageRefreshError] = useState('')
+
   const loadStats = useCallback(async (tok: string) => {
     setStatsLoading(true)
     try {
@@ -118,6 +123,20 @@ export default function AdminPage() {
       setRegenProgress({ done: i + 1, total: ids.length })
     }
     setRegenerating(false); setRegenDone(true); loadStats(token!)
+  }
+
+  const handleRefreshImages = async () => {
+    setRefreshingImages(true); setImageRefreshResult(null); setImageRefreshError('')
+    try {
+      const res = await fetch('/api/admin/refresh-images', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-token': token! },
+        body: JSON.stringify({}),
+      })
+      if (res.ok) setImageRefreshResult(await res.json())
+      else { const err = await res.json().catch(() => ({})); setImageRefreshError(err.error ?? '이미지 재수집 실패') }
+    } catch { setImageRefreshError('네트워크 오류') }
+    setRefreshingImages(false)
   }
 
   const handleLogout = () => {
@@ -235,6 +254,36 @@ export default function AdminPage() {
           {(genError || resetError) && !generating && !resetting && (
             <div className="mt-4 px-4 py-3 rounded-xl" style={{ backgroundColor: '#FFF5F5', border: '1.5px solid #FC8181' }}>
               <p className="text-sm" style={{ color: '#C53030' }}>{genError || resetError}</p>
+            </div>
+          )}
+        </div>
+
+        {/* ── 오늘 트렌드 이미지 재수집 ────────────────────────── */}
+        <div className="rounded-2xl p-5 mb-4" style={{ backgroundColor: '#fff', boxShadow: '0 1px 6px rgba(0,0,0,0.06)' }}>
+          <p className="text-xs font-bold mb-1 uppercase tracking-wide" style={{ color: '#7F8C8D' }}>이미지 재수집</p>
+          <p className="text-xs mb-3" style={{ color: '#95A5A6' }}>오늘 트렌드 og:image + Bing News 관련 기사 갤러리 재수집</p>
+          <button
+            onClick={handleRefreshImages} disabled={refreshingImages}
+            className="w-full rounded-xl font-bold text-white transition-opacity active:opacity-80 disabled:opacity-60"
+            style={{ backgroundColor: '#8E44AD', fontSize: '16px', padding: '16px', lineHeight: 1.3 }}
+          >
+            {refreshingImages ? '🔍 이미지 수집 중... (30~60초)' : '🖼️ 오늘 트렌드 이미지 재수집'}
+          </button>
+
+          {imageRefreshResult && !refreshingImages && (
+            <div className="mt-4 px-4 py-3 rounded-xl" style={{ backgroundColor: '#F0FFF4', border: '1.5px solid #68D391' }}>
+              <p className="text-sm font-bold mb-1.5" style={{ color: '#276749' }}>✅ 이미지 재수집 완료</p>
+              {imageRefreshResult.updated.map((t, i) => (
+                <p key={i} className="text-xs" style={{ color: '#38A169' }}>
+                  {t.title} — 갤러리 {t.gallery_count}장
+                </p>
+              ))}
+            </div>
+          )}
+
+          {imageRefreshError && !refreshingImages && (
+            <div className="mt-4 px-4 py-3 rounded-xl" style={{ backgroundColor: '#FFF5F5', border: '1.5px solid #FC8181' }}>
+              <p className="text-sm" style={{ color: '#C53030' }}>{imageRefreshError}</p>
             </div>
           )}
         </div>

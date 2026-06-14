@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import type { Category, GalleryImage, RelatedSource } from '@/lib/types'
+import { fetchOgImage, fetchRelatedGalleryImages } from '@/lib/utils/og-image'
 
 export const maxDuration = 60
 
@@ -243,20 +244,6 @@ async function fetchDevTo(): Promise<CrawledItem[]> {
   } catch { return [] }
 }
 
-// ── Pexels fallback ─────────────────────────────────────────────
-async function getPexelsImage(keyword: string): Promise<string | null> {
-  const key = process.env.PEXELS_API_KEY
-  if (!key) return null
-  try {
-    const res = await fetch(
-      `https://api.pexels.com/v1/search?query=${encodeURIComponent(keyword)}&per_page=1&orientation=landscape`,
-      { headers: { Authorization: key }, signal: AbortSignal.timeout(6000) }
-    )
-    if (!res.ok) return null
-    const data = await res.json()
-    return (data.photos?.[0]?.src?.large2x as string) ?? null
-  } catch { return null }
-}
 
 // ── Dedup ───────────────────────────────────────────────────────
 function normalize(s: string) {
@@ -461,26 +448,28 @@ async function runCrawl() {
     return NextResponse.json({ error: claudeError ?? 'Claude generation failed', youtubeStatus, collected: selected.length }, { status: 500 })
   }
 
-  // 선별된 항목에 이미지·메타 붙이기
+  // 선별된 항목에 이미지·갤러리·메타 붙이기 (og:image 방식)
   const rows = await Promise.all(
     claudeResults.map(async (result) => {
       const item = selected[result.source_id - 1]
 
-      let imageUrl = item.image_url
-      const galleryImages: GalleryImage[] = []
-
-      if (imageUrl) {
-        galleryImages.push({ url: imageUrl, source_url: item.source_url, site_name: item.site_name })
-      } else {
-        const keyword = item.title.replace(/[^\x00-\x7F]/g, ' ').trim().slice(0, 50) || item.site_name
-        const pexUrl = await getPexelsImage(keyword)
-        if (pexUrl) {
-          imageUrl = pexUrl
-          galleryImages.push({ url: pexUrl, source_url: 'https://www.pexels.com', site_name: 'Pexels' })
-        }
+      // 메인 이미지: YouTube는 썸네일 직접 사용, 그 외는 source_url의 og:image
+      let imageUrl: string | null = item.source === 'youtube' ? item.image_url : null
+      if (!imageUrl) {
+        imageUrl = await fetchOgImage(item.source_url)
       }
 
-      const related: RelatedSource[] = [{ title: item.title, url: item.source_url, site_name: item.site_name }]
+      // 갤러리: 원본 기사 + Google News 관련 기사 og:image
+      const galleryImages: GalleryImage[] = []
+      if (imageUrl) {
+        galleryImages.push({ url: imageUrl, source_url: item.source_url, site_name: item.site_name })
+      }
+      // Claude 생성 제목으로 관련 기사 검색 (갤러리 최대 4장)
+      const searchQuery = result.title.slice(0, 40)
+      const related = await fetchRelatedGalleryImages(searchQuery, item.source_url, 4)
+      galleryImages.push(...related.slice(0, 4 - (galleryImages.length > 0 ? 1 : 0)))
+
+      const relatedSources: RelatedSource[] = [{ title: item.title, url: item.source_url, site_name: item.site_name }]
 
       return {
         title: result.title,
@@ -493,7 +482,7 @@ async function runCrawl() {
         category: result.category,
         tags: result.tags,
         source_url: item.source_url,
-        related_sources: related,
+        related_sources: relatedSources,
         image_search_keyword: item.title.slice(0, 60),
         image_url: imageUrl,
         gallery_images: galleryImages,
