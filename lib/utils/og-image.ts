@@ -46,7 +46,7 @@ export async function fetchOgImage(url: string): Promise<string | null> {
   } catch { return null }
 }
 
-// Bing News RSS → 관련 기사 og:image 수집
+// Bing News RSS → 관련 기사 og:image 수집 (URL 중복 제거)
 export async function fetchRelatedGalleryImages(
   query: string,
   excludeUrl: string,
@@ -61,22 +61,21 @@ export async function fetchRelatedGalleryImages(
     if (!res.ok) return []
     const xml = await res.text()
 
-    const itemMatches = [...xml.matchAll(/<item[^>]*>([\s\S]*?)<\/item>/gi)].slice(0, limit + 3)
+    const itemMatches = [...xml.matchAll(/<item[^>]*>([\s\S]*?)<\/item>/gi)].slice(0, limit + 4)
 
     const candidates: { link: string; siteName: string }[] = []
+    const seenLinks = new Set<string>()
     for (const [, content] of itemMatches) {
-      // Bing News: link contains apiclick.aspx?...url=REAL_URL_ENCODED...
       const rawLink = cleanHtml(
         content.match(/<link[^>]*>\s*([^\s<][^<]*?)\s*<\/link>/i)?.[1]?.trim() ?? ''
       )
       if (!rawLink) continue
 
-      // 실제 기사 URL 추출: url= 파라미터 decoding
       const urlParam = rawLink.match(/[?&]url=([^&]+)/)?.[1]
       const articleUrl = urlParam ? decodeURIComponent(urlParam) : rawLink
-      if (!articleUrl || articleUrl === excludeUrl) continue
+      if (!articleUrl || articleUrl === excludeUrl || seenLinks.has(articleUrl)) continue
+      seenLinks.add(articleUrl)
 
-      // 사이트명: 제목에서 " - 사이트명" 추출
       const titleRaw = cleanHtml(
         content.match(/<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i)?.[1] ?? ''
       )
@@ -98,10 +97,33 @@ export async function fetchRelatedGalleryImages(
     )
 
     const results: GalleryImage[] = []
+    const seenImgUrls = new Set<string>()
     for (const f of fetches) {
-      if (f) results.push(f)
+      if (f && !seenImgUrls.has(f.url)) {
+        seenImgUrls.add(f.url)
+        results.push(f)
+      }
       if (results.length >= limit) break
     }
     return results
+  } catch { return [] }
+}
+
+// Pexels에서 갤러리용 이미지 여러 장 수집
+export async function fetchPexelsImages(keyword: string, limit = 4): Promise<GalleryImage[]> {
+  const key = process.env.PEXELS_API_KEY
+  if (!key || !keyword) return []
+  try {
+    const res = await fetch(
+      `https://api.pexels.com/v1/search?query=${encodeURIComponent(keyword)}&per_page=${limit}&orientation=landscape`,
+      { headers: { Authorization: key }, signal: AbortSignal.timeout(5000) }
+    )
+    if (!res.ok) return []
+    const data = await res.json()
+    return (data.photos ?? []).map((p: { src: { large2x: string }; url: string }) => ({
+      url: p.src.large2x,
+      source_url: p.url,
+      site_name: 'Pexels',
+    }))
   } catch { return [] }
 }

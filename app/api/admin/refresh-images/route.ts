@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { fetchOgImage, fetchRelatedGalleryImages } from '@/lib/utils/og-image'
+import { fetchOgImage, fetchRelatedGalleryImages, fetchPexelsImages } from '@/lib/utils/og-image'
 import type { GalleryImage } from '@/lib/types'
 
 async function getPexelsImage(keyword: string): Promise<string | null> {
@@ -94,8 +94,23 @@ export async function POST(req: NextRequest) {
         imageUrl = await getPexelsImage(keyword)
       }
 
-      // 갤러리: Bing News 관련 기사 최대 4장
-      const galleryImages: GalleryImage[] = [...related.slice(0, 4)]
+      // 갤러리: Bing News 최대 4장 + URL 중복 제거 + Pexels 보충
+      const seenUrls = new Set<string>()
+      const galleryImages: GalleryImage[] = []
+      for (const r of related) {
+        if (!seenUrls.has(r.url) && galleryImages.length < 4) {
+          seenUrls.add(r.url)
+          galleryImages.push(r)
+        }
+      }
+      if (galleryImages.length < 4) {
+        const english = (trend.title.match(/[A-Za-z][A-Za-z0-9 ]{1,}/g) ?? []).join(' ').trim()
+        const keyword = english.length > 2 ? english.slice(0, 50) : trend.title.slice(0, 30)
+        const pexels = await fetchPexelsImages(keyword, 4 - galleryImages.length)
+        for (const p of pexels) {
+          if (!seenUrls.has(p.url)) { seenUrls.add(p.url); galleryImages.push(p) }
+        }
+      }
       const finalImageUrl = imageUrl ?? null
 
       await fetch(`${SURL}/rest/v1/trends?id=eq.${trend.id}`, {

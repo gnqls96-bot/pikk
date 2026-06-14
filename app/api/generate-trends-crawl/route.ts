@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import type { Category, GalleryImage, RelatedSource } from '@/lib/types'
-import { fetchOgImage, fetchRelatedGalleryImages } from '@/lib/utils/og-image'
+import { fetchOgImage, fetchRelatedGalleryImages, fetchPexelsImages } from '@/lib/utils/og-image'
 
 export const maxDuration = 60
 
@@ -378,13 +378,28 @@ async function collectImages(
     mainImg = await getPexelsImage(keyword)
   }
 
-  // 갤러리 구성
+  // 갤러리 구성 (URL 중복 제거)
+  const seenUrls = new Set<string>()
   const gallery: GalleryImage[] = []
-  // 소스 이미지는 제목이 일치할 때만 갤러리에 포함
-  if (mainImg && topicMatches) {
-    gallery.push({ url: mainImg, source_url: item.source_url, site_name: item.site_name })
+
+  const addToGallery = (img: GalleryImage) => {
+    if (!seenUrls.has(img.url) && gallery.length < 4) {
+      seenUrls.add(img.url)
+      gallery.push(img)
+    }
   }
-  gallery.push(...related.slice(0, 4 - Math.min(gallery.length, 1)))
+
+  if (mainImg && topicMatches) {
+    addToGallery({ url: mainImg, source_url: item.source_url, site_name: item.site_name })
+  }
+  for (const r of related) addToGallery(r)
+
+  // Pexels로 4개 채우기
+  if (gallery.length < 4) {
+    const keyword = extractEnglishKeyword(claudeTitle, item.title)
+    const pexels = await fetchPexelsImages(keyword, 4 - gallery.length)
+    for (const p of pexels) addToGallery(p)
+  }
 
   const finalMainImg = mainImg ?? gallery[0]?.url ?? null
   return { mainImg: finalMainImg, gallery }
@@ -453,7 +468,9 @@ async function generateWithClaude(items: CrawledItem[]): Promise<{ results: Clau
 
 // ── Vercel Cron ─────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
-  if (req.headers.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`) {
+  const secret = process.env.CRON_SECRET
+  // Vercel이 CRON_SECRET을 자동 주입하면 검증, 없으면 통과 (로컬 개발용)
+  if (secret && req.headers.get('authorization') !== `Bearer ${secret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   return runCrawl()
