@@ -281,71 +281,88 @@ function dedup(items: CrawledItem[]): CrawledItem[] {
   return result
 }
 
-// ── Claude Sonnet 4.6 저널리스트 — 선별 + 기사 작성 ─────────────
+// ── Claude Sonnet 4.6 저널리스트 — 단일 호출 (선별 + 짧은 기사) ──
 function makeJournalistPrompt(items: CrawledItem[]): string {
   const list = items
-    .map((item, i) =>
-      `${i + 1}. [${item.site_name}] ${item.title}${item.description ? ` — ${item.description.slice(0, 120)}` : ''}`
-    )
+    .map((item, i) => `${i + 1}. [${item.site_name}] ${item.title}`)
     .join('\n')
 
-  return `당신은 전세계 트렌드를 분석하는 최고의 저널리스트입니다.
-아래 수집된 ${items.length}개의 글로벌 뉴스·트렌드 중에서 지금 진짜 핫한 10개를 선별하고, 깊이 있는 한국어 심층 기사를 작성하세요.
+  return `트렌드 에디터. 아래 ${items.length}개 중 핫한 5개를 골라 한국어 카드뉴스를 작성하세요.
+JSON 배열만 출력. 마크다운·코드블록 없음. source_id는 1부터 시작.
+모든 텍스트 필드는 매우 짧게 작성하세요(body 60자, 나머지 30자 이내).
 
-선별 기준:
-① 지금 전세계에서 실제 화제가 되는 글로벌 파급력
-② 한국 독자가 알아야 할 중요도
-③ 테크·문화·경제·사회 등 다양한 주제 균형
+[{"source_id":N,"title":"제목(15자)","summary":"요약(30자)","body":"본문(60자)","why_trending":"이유(30자)","who_affected":"대상(20자)","tags":["태그1","태그2","태그3","태그4","태그5"],"category":"테크|SNS|푸드|뷰티|패션|라이프|디자인|광고|영상 중 하나"}]
 
-반드시 JSON 배열만 출력하세요. 마크다운·설명 없이 순수 JSON만.
-source_id는 아래 목록의 번호 (1부터 시작).
-
-[{
-  "source_id": 번호,
-  "title": "독자가 클릭하고 싶은 강렬한 한국어 제목 (20-35자, 구체적·후킹)",
-  "summary": "핵심 한 줄 요약 (50자 이내)",
-  "body": "최소 800자 한국어 심층 본문. 반드시 포함: 1)배경과 맥락 2)왜 지금 전세계에서 주목받는가(구체적 수치·사례·브랜드명) 3)글로벌 주요 플레이어와 동향 4)한국 시장에서의 의미와 영향 5)앞으로의 전망과 핵심 인사이트. 자연스러운 한국어로.",
-  "why_trending": "왜 지금 전세계에서 폭발적으로 주목받는가를 3줄 이상 구체적으로",
-  "who_affected": "이 트렌드에 주목해야 하는 사람들 (업계인·소비자·투자자 등 구체적으로)",
-  "tags": ["한국어태그1","한국어태그2","한국어태그3","한국어태그4","한국어태그5"],
-  "category": "테크|SNS|푸드|뷰티|패션|라이프|디자인|광고|영상 중 정확히 하나"
-}]
-
-수집된 트렌드:
 ${list}`
 }
 
-async function generateWithClaude(items: CrawledItem[]): Promise<ClaudeResult[]> {
-  const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) return []
+// ── 본문 확장 (insert 후 parallel 실행) ──────────────────────────
+async function expandBody(
+  apiKey: string, title: string, siteName: string, description: string
+): Promise<string | null> {
+  const prompt = `다음 트렌드에 대해 400-600자 한국어 기사 본문을 작성하세요.
+배경·왜 지금 화제·글로벌 동향·한국 의미·전망을 포함하세요.
+본문 텍스트만 출력. JSON·마크다운 없음.
+
+트렌드: ${title}
+출처: ${siteName}${description ? `\n설명: ${description.slice(0, 150)}` : ''}`
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 8192,
+        max_tokens: 700,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal: AbortSignal.timeout(18000),
+    })
+    if (!res.ok) return null
+    const data = await res.json()
+    return (data.content?.[0]?.text as string | undefined)?.trim() ?? null
+  } catch { return null }
+}
+
+async function generateWithClaude(items: CrawledItem[]): Promise<{ results: ClaudeResult[], error?: string, _articleErrors?: string[] }> {
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) return { results: [], error: 'ANTHROPIC_API_KEY 미설정' }
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1200,
         messages: [{ role: 'user', content: makeJournalistPrompt(items) }],
       }),
-      signal: AbortSignal.timeout(50000),
+      signal: AbortSignal.timeout(45000),
     })
-    if (!res.ok) return []
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '')
+      return { results: [], error: `Claude API HTTP ${res.status}: ${errText.slice(0, 200)}` }
+    }
     const data = await res.json()
+    if (data.error) return { results: [], error: `Claude API 오류: ${data.error.message ?? JSON.stringify(data.error)}` }
     const text: string = data.content?.[0]?.text ?? ''
     const jsonMatch = text.match(/\[[\s\S]*\]/)
-    if (!jsonMatch) return []
-    const parsed: Record<string, unknown>[] = JSON.parse(jsonMatch[0])
-    if (!Array.isArray(parsed)) return []
+    if (!jsonMatch) return { results: [], error: `JSON 파싱 실패. Claude 응답 앞 300자: ${text.slice(0, 300)}` }
+    let parsed: Record<string, unknown>[]
+    try {
+      parsed = JSON.parse(jsonMatch[0])
+    } catch (e) {
+      return { results: [], error: `JSON.parse 실패: ${String(e)}. 매칭 앞 200자: ${jsonMatch[0].slice(0, 200)}` }
+    }
+    if (!Array.isArray(parsed)) return { results: [], error: 'Claude 응답이 배열이 아님' }
 
     const seen = new Set<number>()
-    return parsed
+    const results = parsed
       .filter(p => {
         const id = Number(p.source_id)
         if (!Number.isInteger(id) || id < 1 || id > items.length || seen.has(id)) return false
         seen.add(id)
         return true
       })
-      .slice(0, 10)
+      .slice(0, 5)
       .map(p => ({
         source_id: Number(p.source_id),
         title: String(p.title ?? '').slice(0, 80),
@@ -354,9 +371,17 @@ async function generateWithClaude(items: CrawledItem[]): Promise<ClaudeResult[]>
         why_trending: String(p.why_trending ?? '').slice(0, 500),
         who_affected: String(p.who_affected ?? '').slice(0, 300),
         tags: Array.isArray(p.tags) ? (p.tags as unknown[]).map(String).slice(0, 7) : extractTags(items[Number(p.source_id) - 1]?.title ?? ''),
-        category: (VALID_CATS.has(String(p.category)) ? String(p.category) : mapCategory(items[Number(p.source_id) - 1]?.title ?? '')) as Category,
+        category: (VALID_CATS.has(String(p.category)) ? String(p.category) : mapCategory(items[Number(p.source_id) - 1]?.title ?? '', items[Number(p.source_id) - 1]?.yt_category_id)) as Category,
       }))
-  } catch { return [] }
+
+    if (results.length === 0) {
+      const ids = parsed.slice(0, 5).map(p => p.source_id)
+      return { results: [], error: `source_id 검증 실패. 파싱 ${parsed.length}개, 샘플: ${JSON.stringify(ids)}, items.length: ${items.length}` }
+    }
+    return { results }
+  } catch (e) {
+    return { results: [], error: `예외 발생: ${String(e)}` }
+  }
 }
 
 // ── Vercel Cron ─────────────────────────────────────────────────
@@ -430,10 +455,10 @@ async function runCrawl() {
   }
 
   // Claude가 30개 중 10개 선별 + 한국어 기사 작성
-  const claudeResults = await generateWithClaude(selected)
+  const { results: claudeResults, error: claudeError, _articleErrors } = await generateWithClaude(selected)
 
   if (claudeResults.length === 0) {
-    return NextResponse.json({ error: 'Claude generation failed', youtubeStatus, collected: selected.length }, { status: 500 })
+    return NextResponse.json({ error: claudeError ?? 'Claude generation failed', youtubeStatus, collected: selected.length }, { status: 500 })
   }
 
   // 선별된 항목에 이미지·메타 붙이기
@@ -487,7 +512,32 @@ async function runCrawl() {
     return NextResponse.json({ error: await insertRes.text(), youtubeStatus }, { status: 500 })
   }
 
-  const data: { image_url: string | null }[] = await insertRes.json()
+  const data: { id: string; image_url: string | null }[] = await insertRes.json()
+
+  // 본문 자동 확장: Claude 생성 제목/요약 기반으로 확장 (18s parallel)
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (apiKey && data.length > 0) {
+    const expandedBodies = await Promise.all(
+      data.map((inserted, i) => {
+        const row = rows[i]
+        const result = claudeResults[i]
+        const item = selected[result.source_id - 1]
+        // Claude 생성 제목·요약을 기준으로 확장 (원본 item과 다를 수 있음)
+        return expandBody(apiKey, row.title, item.site_name, row.summary || item.description)
+      })
+    )
+    await Promise.all(
+      data.map(async (inserted, i) => {
+        const body = expandedBodies[i]
+        if (!body) return
+        await fetch(`${SURL}/rest/v1/trends?id=eq.${inserted.id}`, {
+          method: 'PATCH',
+          headers: { ...sbHeaders, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+          body: JSON.stringify({ body }),
+        }).catch(() => null)
+      })
+    )
+  }
 
   return NextResponse.json({
     success: true,
@@ -500,5 +550,6 @@ async function runCrawl() {
     },
     hasYoutube: youtube.length > 0,
     youtubeStatus,
+    articleErrors: _articleErrors?.length ? _articleErrors : undefined,
   })
 }
