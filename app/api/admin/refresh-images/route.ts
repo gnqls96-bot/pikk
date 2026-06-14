@@ -2,6 +2,20 @@ import { NextRequest, NextResponse } from 'next/server'
 import { fetchOgImage, fetchRelatedGalleryImages } from '@/lib/utils/og-image'
 import type { GalleryImage } from '@/lib/types'
 
+async function getPexelsImage(keyword: string): Promise<string | null> {
+  const key = process.env.PEXELS_API_KEY
+  if (!key || !keyword) return null
+  try {
+    const res = await fetch(
+      `https://api.pexels.com/v1/search?query=${encodeURIComponent(keyword)}&per_page=1&orientation=landscape`,
+      { headers: { Authorization: key }, signal: AbortSignal.timeout(5000) }
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    return (data.photos?.[0]?.src?.large2x as string) ?? null
+  } catch { return null }
+}
+
 export const maxDuration = 60
 
 function checkAuth(req: NextRequest) {
@@ -27,12 +41,8 @@ export async function POST(req: NextRequest) {
     )
     trends = await res.json()
   } else {
-    // 오늘 KST 자정 이후 트렌드
-    const now = new Date()
-    const kstOffset = 9 * 60 * 60 * 1000
-    const kstNow = new Date(now.getTime() + kstOffset)
-    const kstMidnight = new Date(Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth(), kstNow.getUTCDate()))
-    const cutoff = new Date(kstMidnight.getTime() - kstOffset).toISOString()
+    // 최근 36시간 트렌드 (날짜 변경되어도 전날 트렌드 포함)
+    const cutoff = new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString()
 
     const res = await fetch(
       `${SURL}/rest/v1/trends?published_at=gte.${encodeURIComponent(cutoff)}&select=id,title,source_url,related_sources`,
@@ -52,34 +62,41 @@ export async function POST(req: NextRequest) {
       })()
 
       // YouTube 썸네일 직접 추출
+      const searchQuery = trend.title.slice(0, 40)
       const isYouTube = trend.source_url.includes('youtube.com') || trend.source_url.includes('youtu.be')
-      let imageUrl: string | null = null
 
-      if (isYouTube) {
-        const videoId = trend.source_url.match(/[?&]v=([^&]+)/)?.[1] ??
-          trend.source_url.match(/youtu\.be\/([^?]+)/)?.[1]
-        if (videoId) {
-          imageUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`
+      // ① Bing News 트렌드 제목 검색 (항상 최우선)
+      let related = await fetchRelatedGalleryImages(searchQuery, trend.source_url, 4)
+      // 결과 없으면 영어 키워드만으로 재시도 (e.g. "Anthropic 비즈니스 점유율 1위" → "Anthropic")
+      if (related.length === 0) {
+        const engWords = (trend.title.match(/[A-Za-z][A-Za-z0-9 ]{1,}/g) ?? []).join(' ').trim()
+        if (engWords.length > 2) {
+          related = await fetchRelatedGalleryImages(engWords, trend.source_url, 4)
+        }
+      }
+      let imageUrl: string | null = related.length > 0 ? related[0].url : null
+
+      // ② Bing News 결과 없으면: og:image (비-YouTube) 또는 YouTube 썸네일
+      if (!imageUrl) {
+        if (isYouTube) {
+          const videoId = trend.source_url.match(/[?&]v=([^&]+)/)?.[1] ??
+            trend.source_url.match(/youtu\.be\/([^?]+)/)?.[1]
+          if (videoId) imageUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`
+        } else {
+          imageUrl = await fetchOgImage(trend.source_url)
         }
       }
 
+      // ③ Pexels fallback (영어 키워드)
       if (!imageUrl) {
-        imageUrl = await fetchOgImage(trend.source_url)
+        const english = (trend.title.match(/[A-Za-z][A-Za-z0-9 ]{2,}/g) ?? []).join(' ').trim()
+        const keyword = english.length > 3 ? english.slice(0, 50) : trend.title.slice(0, 30)
+        imageUrl = await getPexelsImage(keyword)
       }
 
-      // 갤러리: 원본 기사 + 관련 기사 og:image
-      const galleryImages: GalleryImage[] = []
-      if (imageUrl) {
-        galleryImages.push({ url: imageUrl, source_url: trend.source_url, site_name: siteName })
-      }
-
-      const searchQuery = trend.title.slice(0, 40)
-      const related = await fetchRelatedGalleryImages(searchQuery, trend.source_url, 4)
-      const remaining = 4 - (galleryImages.length > 0 ? 1 : 0)
-      galleryImages.push(...related.slice(0, remaining))
-
-      // 메인 이미지가 없으면 갤러리 첫 번째 이미지 사용
-      const finalImageUrl = imageUrl ?? galleryImages[0]?.url ?? null
+      // 갤러리: Bing News 관련 기사 최대 4장
+      const galleryImages: GalleryImage[] = [...related.slice(0, 4)]
+      const finalImageUrl = imageUrl ?? null
 
       await fetch(`${SURL}/rest/v1/trends?id=eq.${trend.id}`, {
         method: 'PATCH',
