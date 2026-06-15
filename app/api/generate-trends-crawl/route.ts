@@ -8,7 +8,7 @@ import {
   isValidImageUrl,
 } from '@/lib/utils/og-image'
 
-export const maxDuration = 60
+export const maxDuration = 120
 
 // ── Logging ─────────────────────────────────────────────────────
 function log(msg: string, data?: unknown) {
@@ -332,51 +332,67 @@ ${recentBlock}
 ${list}`
 }
 
-// 프리미엄 저널리스트 본문 생성 (Sonnet, 1000자 이상 필수)
-async function expandBody(apiKey: string, title: string, siteName: string, description: string, summary: string): Promise<string> {
-  const prompt = `당신은 구독료를 받는 프리미엄 저널리스트입니다. 독자들이 돈을 내고 읽는 깊이 있는 기사를 씁니다.
+// 프리미엄 저널리스트 본문 배치 생성
+// 5개씩 2배치 병렬 실행으로 타임아웃 방지 (10개 단일 배치 = 75s 초과)
+async function expandAllBodies(
+  apiKey: string,
+  trends: { title: string; siteName: string; description: string; summary: string }[]
+): Promise<string[]> {
 
-다음 트렌드에 대해 한국어 기사 본문을 작성하세요.
+  async function runBatch(batch: typeof trends, offset: number): Promise<string[]> {
+    const trendList = batch.map((t, i) =>
+      `${offset + i + 1}. 제목: ${t.title}\n   출처: ${t.siteName}\n   핵심요약(반복금지): ${t.summary}\n   ${t.description ? `설명: ${t.description.slice(0, 150)}` : ''}`
+    ).join('\n\n')
 
-반드시 포함할 항목 (빠지면 실패):
-1. 배경: 이 트렌드가 생겨난 맥락과 역사적 흐름
-2. 왜 지금 뜨는가: 최근 촉발 요인, 구체적 수치·데이터·사례
-3. 글로벌 동향: 세계 주요 국가·기업·인물의 반응과 움직임
-4. 한국에서의 의미: 한국 시장·소비자·기업에 미치는 영향
-5. 전망: 앞으로 3~6개월, 1~3년 시나리오
+    const prompt = `당신은 구독료를 받는 프리미엄 저널리스트입니다.
 
-규칙:
-- 반드시 1000자 이상 (짧으면 실패)
-- 아래 핵심 요약을 그대로 반복하지 말 것 (요약과 달라야 함)
-- 제목·마크다운 헤더 없이 본문만 출력
-- 구체적 수치, 기업명, 인물명, 날짜 적극 사용
-- 독자가 "아 이래서 중요하구나" 느낄 수 있게
+아래 ${batch.length}개 트렌드 각각에 대해 한국어 기사 본문을 작성하세요.
 
-트렌드 제목: ${title}
-출처: ${siteName}
-핵심 요약 (반복 금지): ${summary}
-${description ? `추가 정보: ${description.slice(0, 300)}` : ''}`
+각 본문에 반드시 포함:
+1. 배경: 맥락과 역사적 흐름
+2. 왜 지금 뜨는가: 수치·데이터·사례
+3. 글로벌 동향: 주요 국가·기업·인물 반응
+4. 한국에서의 의미: 한국 시장·소비자·기업 영향
+5. 전망: 3~6개월, 1~3년 시나리오
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+규칙: 각 본문 600~800자 | 핵심요약 반복 금지 | 구체적 수치·기업명·인물명 사용 | 제목·헤더 없이 본문만
+출력: JSON 배열만 ["본문1", ..., "본문${batch.length}"] (마크다운·코드블록 없음)
+
+트렌드:
+${trendList}`
+
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 2000,
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 8000,
           messages: [{ role: 'user', content: prompt }],
         }),
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(60000),
       })
-      if (!res.ok) continue
+      if (!res.ok) { log('expandBodies_error', { status: res.status, offset }); return batch.map(() => '') }
       const data = await res.json()
-      const body = (data.content?.[0]?.text as string | undefined)?.trim() ?? ''
-      if (body.length >= 1000) return body
-      // 1000자 미만이면 retry
-    } catch { /* retry */ }
+      const text: string = data.content?.[0]?.text ?? ''
+      const match = text.match(/\[[\s\S]*\]/)
+      if (!match) { log('expandBodies_no_json', { offset, preview: text.slice(0, 200) }); return batch.map(() => '') }
+      const parsed: unknown[] = JSON.parse(match[0])
+      if (!Array.isArray(parsed)) return batch.map(() => '')
+      return parsed.map(b => String(b ?? '').trim())
+    } catch (e) {
+      log('expandBodies_exception', { error: String(e), offset })
+      return batch.map(() => '')
+    }
   }
-  return ''
+
+  // 5개씩 2배치 병렬 실행 → 각 ~35s, 총 ~35s (병렬)
+  const half = Math.ceil(trends.length / 2)
+  const [bodies1, bodies2] = await Promise.all([
+    runBatch(trends.slice(0, half), 0),
+    runBatch(trends.slice(half), half),
+  ])
+  return [...bodies1, ...bodies2]
 }
 
 async function generateWithClaude(items: CrawledItem[], recentTitles: string[]): Promise<{ results: ClaudeResult[], error?: string }> {
@@ -520,19 +536,26 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
 
   // ── 4. 이미지 수집 + 프리미엄 본문 생성 병렬 실행 (INSERT 이전!) ───────
   // 핵심: 이미지+본문을 먼저 확정하고 단일 INSERT → 순서 불일치 버그 완전 제거
-  const enriched = await Promise.all(
-    claudeResults.map(async (result) => {
+  // 본문: 10개 Sonnet 병렬 대신 단일 배치 호출 (타임아웃 방지)
+  const [imageResults, bodies] = await Promise.all([
+    Promise.all(claudeResults.map(async (result) => {
       const item = selected[result.source_id - 1]
-      // 이미지 수집 & 프리미엄 본문 동시 실행 (각각 독립, 서로 다른 키워드로 오염 없음)
-      const [{ mainImg, gallery }, expandedBody] = await Promise.all([
-        collectImages(result.title, item, result.category),
-        apiKey
-          ? expandBody(apiKey, result.title, item.site_name, item.description, result.summary)
-          : Promise.resolve(''),
-      ])
-      return { result, item, mainImg, gallery, expandedBody }
-    })
-  )
+      return { result, item, ...(await collectImages(result.title, item, result.category)) }
+    })),
+    apiKey
+      ? expandAllBodies(apiKey, claudeResults.map(r => ({
+          title: r.title,
+          siteName: selected[r.source_id - 1]?.site_name ?? '',
+          description: selected[r.source_id - 1]?.description ?? '',
+          summary: r.summary,
+        })))
+      : Promise.resolve(claudeResults.map(() => '')),
+  ])
+
+  const enriched = imageResults.map((img, i) => ({
+    ...img,
+    expandedBody: bodies[i] ?? '',
+  }))
 
   // ── 5. 이미지 유효성 검증 (병렬 HEAD) ───────────────────────
   const validated = await Promise.all(
@@ -543,26 +566,36 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
   )
 
   // ── 6. 필터: 이미지 없거나 중복이거나 본문 부족하면 제외 ────
+  const filterLog: { title: string; reason?: string; bodyLen: number; imageOk: boolean }[] = []
   const valid = validated.filter(e => {
+    const entry = { title: e.result.title, bodyLen: e.expandedBody.length, imageOk: e.imageOk }
     if (!e.imageOk) {
       log('skip_no_image', { title: e.result.title, mainImg: e.mainImg })
+      filterLog.push({ ...entry, reason: 'no_image' })
       return false
     }
     if (isDuplicateTrend(e.result.title, e.result.tags, recentTrends)) {
       log('skip_duplicate', { title: e.result.title })
+      filterLog.push({ ...entry, reason: 'duplicate' })
       return false
     }
-    if (e.expandedBody.length < 1000) {
+    if (e.expandedBody.length < 300) {
       log('skip_short_body', { title: e.result.title, bodyLen: e.expandedBody.length })
+      filterLog.push({ ...entry, reason: 'short_body' })
       return false
     }
+    filterLog.push(entry)
     return true
   })
 
-  log('filter', { total: claudeResults.length, valid: valid.length, elapsed: Date.now() - t0 })
+  log('filter', { total: claudeResults.length, valid: valid.length, elapsed: Date.now() - t0, filterLog })
 
   if (valid.length === 0) {
-    return NextResponse.json({ error: '유효한 트렌드 없음 (이미지 없거나 중복)', collected: selected.length }, { status: 500 })
+    return NextResponse.json({
+      error: '유효한 트렌드 없음',
+      collected: selected.length,
+      filterLog,
+    }, { status: 500 })
   }
 
   // ── 7. 단일 INSERT (이미지+본문 포함) ────────────────────────
