@@ -1,20 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { fetchOgImage, fetchRelatedGalleryImages, fetchPexelsImages } from '@/lib/utils/og-image'
+import { fetchOgImage, fetchRelatedGalleryImages, fetchPexelsImages, isValidImageUrl, searchYouTubeThumbnail } from '@/lib/utils/og-image'
 import type { GalleryImage } from '@/lib/types'
-
-async function getPexelsImage(keyword: string): Promise<string | null> {
-  const key = process.env.PEXELS_API_KEY
-  if (!key || !keyword) return null
-  try {
-    const res = await fetch(
-      `https://api.pexels.com/v1/search?query=${encodeURIComponent(keyword)}&per_page=1&orientation=landscape`,
-      { headers: { Authorization: key }, signal: AbortSignal.timeout(5000) }
-    )
-    if (!res.ok) return null
-    const data = await res.json()
-    return (data.photos?.[0]?.src?.large2x as string) ?? null
-  } catch { return null }
-}
 
 export const maxDuration = 60
 
@@ -57,74 +43,64 @@ export async function POST(req: NextRequest) {
 
   const results = await Promise.all(
     trends.map(async (trend) => {
-      const siteName = trend.related_sources?.[0]?.site_name ?? (() => {
-        try { return new URL(trend.source_url).hostname.replace(/^www\./, '') } catch { return 'Unknown' }
-      })()
-
-      // YouTube 썸네일 직접 추출
-      const searchQuery = trend.title.slice(0, 40)
       const isYouTube = trend.source_url.includes('youtube.com') || trend.source_url.includes('youtu.be')
+      const searchQuery = trend.title.slice(0, 50)
+      const engWords = (trend.title.match(/[A-Za-z][A-Za-z0-9 ]{1,}/g) ?? []).join(' ').trim()
 
-      // ① Bing News 트렌드 제목 검색 (항상 최우선)
-      let related = await fetchRelatedGalleryImages(searchQuery, trend.source_url, 4)
-      // 결과 없으면 영어 키워드만으로 재시도 (e.g. "Anthropic 비즈니스 점유율 1위" → "Anthropic")
-      if (related.length === 0) {
-        const engWords = (trend.title.match(/[A-Za-z][A-Za-z0-9 ]{1,}/g) ?? []).join(' ').trim()
-        if (engWords.length > 2) {
-          related = await fetchRelatedGalleryImages(engWords, trend.source_url, 4)
-        }
-      }
-      let imageUrl: string | null = related.length > 0 ? related[0].url : null
+      // 모든 이미지 소스 병렬 실행
+      const [bingKo, bingEn, ogImg, ytSearchThumb, pexels] = await Promise.all([
+        fetchRelatedGalleryImages(searchQuery, trend.source_url, 4),
+        engWords.length > 2 ? fetchRelatedGalleryImages(engWords, trend.source_url, 4) : Promise.resolve<GalleryImage[]>([]),
+        isYouTube ? Promise.resolve<string | null>(null) : fetchOgImage(trend.source_url),
+        searchYouTubeThumbnail(searchQuery),
+        fetchPexelsImages(engWords.length > 2 ? engWords.slice(0, 50) : searchQuery.slice(0, 30), 4),
+      ])
 
-      // ② Bing News 결과 없으면: og:image (비-YouTube) 또는 YouTube 썸네일
-      if (!imageUrl) {
-        if (isYouTube) {
-          const videoId = trend.source_url.match(/[?&]v=([^&]+)/)?.[1] ??
-            trend.source_url.match(/youtu\.be\/([^?]+)/)?.[1]
-          if (videoId) imageUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`
-        } else {
-          imageUrl = await fetchOgImage(trend.source_url)
-        }
-      }
+      // YouTube 소스 썸네일
+      const ytSourceThumb = isYouTube ? (() => {
+        const vid = trend.source_url.match(/[?&]v=([^&]+)/)?.[1] ?? trend.source_url.match(/youtu\.be\/([^?]+)/)?.[1]
+        return vid ? `https://img.youtube.com/vi/${vid}/maxresdefault.jpg` : null
+      })() : null
 
-      // ③ Pexels fallback (영어 키워드)
-      if (!imageUrl) {
-        const english = (trend.title.match(/[A-Za-z][A-Za-z0-9 ]{2,}/g) ?? []).join(' ').trim()
-        const keyword = english.length > 3 ? english.slice(0, 50) : trend.title.slice(0, 30)
-        imageUrl = await getPexelsImage(keyword)
-      }
+      // 우선순위 메인 이미지
+      const imageUrl =
+        bingKo[0]?.url ?? bingEn[0]?.url ?? ogImg ?? ytSourceThumb ?? ytSearchThumb ?? pexels[0]?.url ?? null
 
-      // 갤러리: Bing News 최대 4장 + URL 중복 제거 + Pexels 보충
+      // 갤러리 구성 (중복 없이 4개)
       const seenUrls = new Set<string>()
       const galleryImages: GalleryImage[] = []
-      for (const r of related) {
-        if (!seenUrls.has(r.url) && galleryImages.length < 4) {
-          seenUrls.add(r.url)
-          galleryImages.push(r)
+      const addToGallery = (img: GalleryImage) => {
+        if (!seenUrls.has(img.url) && galleryImages.length < 4) {
+          seenUrls.add(img.url); galleryImages.push(img)
         }
       }
-      if (galleryImages.length < 4) {
-        const english = (trend.title.match(/[A-Za-z][A-Za-z0-9 ]{1,}/g) ?? []).join(' ').trim()
-        const keyword = english.length > 2 ? english.slice(0, 50) : trend.title.slice(0, 30)
-        const pexels = await fetchPexelsImages(keyword, 4 - galleryImages.length)
-        for (const p of pexels) {
-          if (!seenUrls.has(p.url)) { seenUrls.add(p.url); galleryImages.push(p) }
+      for (const r of [...bingKo, ...bingEn]) addToGallery(r)
+      if (ytSourceThumb) addToGallery({ url: ytSourceThumb, source_url: trend.source_url, site_name: 'YouTube' })
+      if (ytSearchThumb) addToGallery({ url: ytSearchThumb, source_url: trend.source_url, site_name: 'YouTube' })
+      for (const p of pexels) addToGallery(p)
+
+      // 이미지 유효성 검증
+      const imageOk = imageUrl ? await isValidImageUrl(imageUrl) : false
+
+      if (!imageOk) {
+        // 재시도 후에도 이미지 없으면 삭제
+        const svcKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+        if (svcKey) {
+          await fetch(`${SURL}/rest/v1/trends?id=eq.${trend.id}`, {
+            method: 'DELETE',
+            headers: { apikey: svcKey, Authorization: `Bearer ${svcKey}` },
+          })
         }
+        return { id: trend.id, title: trend.title, deleted: true, reason: '이미지 수집 실패' }
       }
-      const finalImageUrl = imageUrl ?? null
 
       await fetch(`${SURL}/rest/v1/trends?id=eq.${trend.id}`, {
         method: 'PATCH',
         headers: { ...headers, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
-        body: JSON.stringify({ image_url: finalImageUrl, gallery_images: galleryImages }),
+        body: JSON.stringify({ image_url: imageUrl, gallery_images: galleryImages }),
       })
 
-      return {
-        id: trend.id,
-        title: trend.title,
-        image_url: finalImageUrl,
-        gallery_count: galleryImages.length,
-      }
+      return { id: trend.id, title: trend.title, image_url: imageUrl, gallery_count: galleryImages.length }
     })
   )
 

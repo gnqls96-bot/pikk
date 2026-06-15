@@ -5,9 +5,8 @@ function cleanHtml(s: string) {
 }
 
 function resolveUrl(base: string, href: string): string {
-  try {
-    return new URL(href, base).toString()
-  } catch { return href }
+  try { return new URL(href, base).toString() }
+  catch { return href }
 }
 
 export async function fetchOgImage(url: string): Promise<string | null> {
@@ -21,7 +20,6 @@ export async function fetchOgImage(url: string): Promise<string | null> {
       redirect: 'follow',
     })
     if (!res.ok) return null
-    // Only read first 20KB to find og:image quickly
     const reader = res.body?.getReader()
     if (!reader) return null
     let html = ''
@@ -33,7 +31,6 @@ export async function fetchOgImage(url: string): Promise<string | null> {
     }
     reader.cancel().catch(() => null)
 
-    // og:image (property or name variant)
     const ogMatch =
       html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ??
       html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i) ??
@@ -46,7 +43,22 @@ export async function fetchOgImage(url: string): Promise<string | null> {
   } catch { return null }
 }
 
-// Bing News RSS → 관련 기사 og:image 수집 (URL 중복 제거)
+// 이미지 URL 유효성 검증 (HEAD 요청)
+export async function isValidImageUrl(url: string): Promise<boolean> {
+  if (!url || !url.startsWith('http')) return false
+  try {
+    const res = await fetch(url, {
+      method: 'HEAD',
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1)' },
+      signal: AbortSignal.timeout(4000),
+      redirect: 'follow',
+    })
+    // 서버 오류(5xx)와 연결 실패만 거부 — CDN quirks(403/404) 제외
+    return res.status < 500
+  } catch { return false }
+}
+
+// Bing News RSS → 관련 기사 og:image (URL 중복 제거)
 export async function fetchRelatedGalleryImages(
   query: string,
   excludeUrl: string,
@@ -62,15 +74,14 @@ export async function fetchRelatedGalleryImages(
     const xml = await res.text()
 
     const itemMatches = [...xml.matchAll(/<item[^>]*>([\s\S]*?)<\/item>/gi)].slice(0, limit + 4)
-
     const candidates: { link: string; siteName: string }[] = []
     const seenLinks = new Set<string>()
+
     for (const [, content] of itemMatches) {
       const rawLink = cleanHtml(
         content.match(/<link[^>]*>\s*([^\s<][^<]*?)\s*<\/link>/i)?.[1]?.trim() ?? ''
       )
       if (!rawLink) continue
-
       const urlParam = rawLink.match(/[?&]url=([^&]+)/)?.[1]
       const articleUrl = urlParam ? decodeURIComponent(urlParam) : rawLink
       if (!articleUrl || articleUrl === excludeUrl || seenLinks.has(articleUrl)) continue
@@ -83,7 +94,6 @@ export async function fetchRelatedGalleryImages(
       const siteName = siteFromTitle || (() => {
         try { return new URL(articleUrl).hostname.replace(/^www\./, '') } catch { return 'Bing News' }
       })()
-
       candidates.push({ link: articleUrl, siteName })
     }
 
@@ -109,10 +119,32 @@ export async function fetchRelatedGalleryImages(
   } catch { return [] }
 }
 
-// Pexels에서 갤러리용 이미지 여러 장 수집
+// YouTube Data API 검색 → 썸네일 (이미지 폴백용)
+export async function searchYouTubeThumbnail(query: string): Promise<string | null> {
+  const key = process.env.YOUTUBE_API_KEY
+  if (!key) return null
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?q=${encodeURIComponent(query)}&type=video&maxResults=3&part=snippet&key=${key}`,
+      { signal: AbortSignal.timeout(5000) }
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    for (const item of (data.items ?? [])) {
+      const thumb =
+        item.snippet?.thumbnails?.maxres?.url ??
+        item.snippet?.thumbnails?.high?.url ??
+        item.snippet?.thumbnails?.medium?.url
+      if (thumb) return thumb as string
+    }
+    return null
+  } catch { return null }
+}
+
+// Pexels 이미지 다수 수집
 export async function fetchPexelsImages(keyword: string, limit = 4): Promise<GalleryImage[]> {
   const key = process.env.PEXELS_API_KEY
-  if (!key || !keyword) return []
+  if (!key || !keyword.trim()) return []
   try {
     const res = await fetch(
       `https://api.pexels.com/v1/search?query=${encodeURIComponent(keyword)}&per_page=${limit}&orientation=landscape`,
