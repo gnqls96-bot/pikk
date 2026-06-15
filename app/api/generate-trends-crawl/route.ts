@@ -107,9 +107,11 @@ const CAT_RSS_SOURCES: Array<{ cat: Category; url: string; name: string }> = [
   // 광고
   { cat: '광고',  url: 'https://www.adweek.com/feed/',                   name: 'Adweek' },
   { cat: '광고',  url: 'https://www.marketingweek.com/feed/',            name: 'Marketing Week' },
+  { cat: '광고',  url: 'https://www.campaignlive.com/rss',               name: 'Campaign' },
   // 영상
   { cat: '영상',  url: 'https://variety.com/feed/',                      name: 'Variety' },
   { cat: '영상',  url: 'https://deadline.com/feed/',                     name: 'Deadline' },
+  { cat: '영상',  url: 'https://www.hollywoodreporter.com/feed/',        name: 'Hollywood Reporter' },
 ]
 const CAT_REDDIT_SOURCES: Array<{ cat: Category; subreddit: string; minScore: number }> = [
   { cat: '푸드',  subreddit: 'food',             minScore: 200 },
