@@ -29,8 +29,12 @@ interface CrawledItem {
 
 interface ClaudeResult {
   source_id: number
+  // 영구 고정: 번역 없이 소스 원본 제목 그대로 저장 (다른 트렌드 제목 혼입 절대 금지)
+  original_title: string
   title: string
   summary: string
+  // 영구 고정: 실제 트렌딩 강도 기반 점수 (40-99), 소스 데이터와 별개로 저널리스트가 판단
+  heat_score: number
   why_trending: string
   who_affected: string
   tags: string[]
@@ -152,6 +156,22 @@ async function fetchHNTop(): Promise<CrawledItem[]> {
 function cleanText(s: string) {
   return s.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ').trim()
 }
+// 픽크 온도 (RSS): pubDate 기반 신선도 계산 — 하드코딩 금지
+// 영구 고정: 발행 시간이 다르면 온도도 달라야 함
+function rssFreshnessScore(pubDateStr: string): number {
+  if (!pubDateStr) return 52
+  try {
+    const ageHours = (Date.now() - new Date(pubDateStr).getTime()) / 3600000
+    if (isNaN(ageHours) || ageHours < 0) return 52
+    if (ageHours < 2) return 80
+    if (ageHours < 6) return 73
+    if (ageHours < 12) return 67
+    if (ageHours < 24) return 60
+    if (ageHours < 48) return 53
+    return 46
+  } catch { return 52 }
+}
+
 function parseFeedXml(xml: string, siteName: string): Omit<CrawledItem, 'source'>[] {
   const isAtom = xml.includes('<feed')
   const results: Omit<CrawledItem, 'source'>[] = []
@@ -163,7 +183,12 @@ function parseFeedXml(xml: string, siteName: string): Omit<CrawledItem, 'source'
     if (!link) continue
     const desc = cleanText((isAtom ? c.match(/<(?:summary|content)[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/(?:summary|content)>/i)?.[1] : c.match(/<description[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/i)?.[1]) ?? '').slice(0, 300)
     const imgUrl = c.match(/<media:content[^>]+url=["']([^"']+)["'][^>]*medium=["']image["']/i)?.[1] ?? c.match(/<media:thumbnail[^>]+url=["']([^"']+)["']/i)?.[1] ?? null
-    results.push({ title, description: desc, image_url: imgUrl, source_url: link, site_name: siteName, heat_score: 62 })
+    const pubDate = cleanText(
+      c.match(/<pubDate[^>]*>([\s\S]*?)<\/pubDate>/i)?.[1] ??
+      c.match(/<updated[^>]*>([\s\S]*?)<\/updated>/i)?.[1] ??
+      c.match(/<published[^>]*>([\s\S]*?)<\/published>/i)?.[1] ?? ''
+    )
+    results.push({ title, description: desc, image_url: imgUrl, source_url: link, site_name: siteName, heat_score: rssFreshnessScore(pubDate) })
   }
   return results
 }
@@ -297,6 +322,7 @@ async function collectImages(
 
 // ── Claude 저널리스트 ──────────────────────────────────────────
 function makeJournalistPrompt(items: CrawledItem[], recentTitles: string[]): string {
+  // 소스 번호와 원본 제목을 함께 표시 — original_title 혼입 방지
   const list = items.map((item, i) => `${i + 1}. [${item.site_name}] ${item.title}`).join('\n')
   const recentBlock = recentTitles.length > 0
     ? `\n이미 발행됨 (선택 금지): ${recentTitles.slice(0, 15).join(' / ')}\n`
@@ -305,7 +331,20 @@ function makeJournalistPrompt(items: CrawledItem[], recentTitles: string[]): str
 JSON 배열만 출력. 마크다운·코드블록 없음. source_id는 1부터 시작.
 ${recentBlock}
 형식:
-[{"source_id":N,"title":"한국어 제목(20자 이내)","summary":"핵심 요약 한 문장(60자 이내, 본문과 달라야 함)","why_trending":"왜 지금 뜨는지(30자)","who_affected":"누가 영향받는지(20자)","tags":["태그1","태그2","태그3","태그4","태그5"],"category":"테크|SNS|푸드|뷰티|패션|라이프|디자인|광고|영상 중 하나"}]
+[{"source_id":N,"original_title":"소스 목록의 해당 번호 제목을 번역 없이 그대로 복사","title":"한국어 제목(20자 이내)","summary":"핵심 요약 한 문장(60자 이내, 본문과 달라야 함)","heat_score":40~99,"why_trending":"왜 지금 뜨는지(30자)","who_affected":"누가 영향받는지(20자)","tags":["태그1","태그2","태그3","태그4","태그5"],"category":"테크|SNS|푸드|뷰티|패션|라이프|디자인|광고|영상 중 하나"}]
+
+heat_score 기준 (영구 고정 — 트렌드마다 반드시 다른 값):
+- 90~99: 글로벌 바이럴, 수백만 반응
+- 80~89: 광범위 화제, 주요 미디어 집중 보도
+- 70~79: 업계/커뮤니티 핫토픽
+- 60~69: 부상 중인 트렌드
+- 50~59: 관심 증가 초기 단계
+- 40~49: 틈새 관심
+
+original_title 규칙 (영구 고정):
+- 반드시 소스 목록의 해당 source_id 번호의 제목을 그대로 복사
+- 번역·수정·다른 트렌드 제목 혼입 절대 금지
+- 예: source_id=3이면 "3. [사이트명] 제목" 에서 "제목" 부분만 복사
 
 소스 목록:
 ${list}`
@@ -394,7 +433,7 @@ async function generateWithClaude(items: CrawledItem[], recentTitles: string[]):
       headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 2200,
+        max_tokens: 3500,
         messages: [{ role: 'user', content: makeJournalistPrompt(items, recentTitles) }],
       }),
       signal: AbortSignal.timeout(38000),
@@ -414,10 +453,20 @@ async function generateWithClaude(items: CrawledItem[], recentTitles: string[]):
       .slice(0, 10)
       .map(p => {
         const sid = Number(p.source_id), src = items[sid - 1]
+        // original_title 영구 고정: Claude가 반환한 original_title 우선 사용
+        // 없으면 source_id로 items 배열에서 직접 조회 — 절대 다른 트렌드 제목 사용 금지
+        const originalTitle = String(p.original_title ?? '').trim() || (src?.title ?? '')
+        // heat_score 영구 고정: 저널리스트 판단값 사용, 범위 벗어나면 소스값으로 대체
+        const rawHeat = Number(p.heat_score)
+        const heatScore = Number.isInteger(rawHeat) && rawHeat >= 40 && rawHeat <= 99
+          ? rawHeat
+          : (src?.heat_score ?? 60)
         return {
           source_id: sid,
+          original_title: originalTitle.slice(0, 300),
           title: String(p.title ?? '').slice(0, 80),
           summary: String(p.summary ?? '').slice(0, 200),
+          heat_score: heatScore,
           why_trending: String(p.why_trending ?? '').slice(0, 500),
           who_affected: String(p.who_affected ?? '').slice(0, 300),
           tags: Array.isArray(p.tags) ? (p.tags as unknown[]).map(String).slice(0, 7) : extractTags(src?.title ?? ''),
@@ -619,11 +668,14 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
     return {
       title: e.result.title,
       summary: e.result.summary,
-      original_title: e.item.title,
+      // 영구 고정: original_title = 저널리스트가 확인한 해당 트렌드 원본 제목
+      // source_id 오매핑 방어: Claude의 original_title 필드 우선, 없으면 items 배열 직접 조회
+      original_title: e.result.original_title || e.item?.title || '',
       body: e.expandedBody,
       why_trending: e.result.why_trending || null,
       who_affected: e.result.who_affected || null,
-      heat_score: e.item.heat_score,
+      // 영구 고정: 저널리스트 판단 열기 점수 사용 (트렌드마다 고유값, 전부 동일값 금지)
+      heat_score: e.result.heat_score,
       category: e.result.category,
       tags: e.result.tags,
       source_url: e.item.source_url,
