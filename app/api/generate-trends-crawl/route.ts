@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import type { Category, GalleryImage, RelatedSource } from '@/lib/types'
 import {
-  fetchOgImage,
   fetchRelatedGalleryImages,
-  fetchPexelsImages,
   searchYouTubeThumbnail,
-  isValidImageUrl,
+  isValidTrendImage,
+  isLowQualityImageUrl,
 } from '@/lib/utils/og-image'
 
 export const maxDuration = 300
@@ -343,28 +342,48 @@ async function collectImages(
       : Promise.resolve<GalleryImage[]>([]),
   ])
 
-  // 2단계: 한국어 우선 합치기 (중복 이미지 URL 제거)
+  // 2단계: 한국어 우선 합치기 (중복 URL + 저품질 URL 제외)
   const seenUrls = new Set<string>()
   const allImages: GalleryImage[] = []
   for (const img of [...koArticleImages, ...enArticleImages]) {
+    // 영구 고정: URL 패턴 기반 저품질 이미지 즉시 제외
+    if (isLowQualityImageUrl(img.url)) continue
     if (!seenUrls.has(img.url) && allImages.length < 5) {
       seenUrls.add(img.url)
       allImages.push(img)
     }
   }
 
-  // 3단계: 메인 이미지 = 첫 번째 기사 og:image
-  //        갤러리 = 나머지 기사 og:images (최대 4개)
+  // 3단계: 메인 이미지 = 첫 번째 기사 og:image, 갤러리 = 나머지 최대 4개
   const mainImg = allImages[0]?.url ?? null
   const gallery = allImages.slice(0, 4)
 
-  // 4단계: 뉴스 og:image가 하나도 없을 때만 Pexels (마지막 수단)
-  //        이 경로는 최대한 피해야 함 — 트렌드와 직접 관련 없는 이미지
+  // ─────────────────────────────────────────────────────────────────
+  // 4단계 폴백 (영구 고정 우선순위):
+  //   1순위: 뉴스 기사 og:image (위에서 수집)
+  //   2순위: YouTube 관련 영상 썸네일 (API 검색)
+  //   3순위: 없으면 mainImg=null → 발행 금지 (isValidTrendImage에서 필터)
+  //   ✗ Pexels 사용 금지
+  // ─────────────────────────────────────────────────────────────────
   if (!mainImg) {
-    const keyword = engKeyword.length > 2 ? engKeyword : (CATEGORY_KEYWORD[category] ?? 'trending news')
-    const pexels = await fetchPexelsImages(keyword, 4)
-    log('pexels_fallback', { title: claudeTitle, reason: 'news_og_image_all_failed' })
-    return { mainImg: pexels[0]?.url ?? null, gallery: pexels.slice(0, 4), articles: pexels }
+    // YouTube 소스 직접 썸네일 (API 불필요, YouTube 트렌드 전용)
+    const ytVid = item.source_url.match(/[?&]v=([^&]+)/)?.[1]
+      ?? item.source_url.match(/youtu\.be\/([^?]+)/)?.[1]
+    const ytSourceThumb = ytVid ? `https://img.youtube.com/vi/${ytVid}/maxresdefault.jpg` : null
+
+    // YouTube API 검색 (키워드 검색)
+    const ytSearchThumb = await searchYouTubeThumbnail(claudeTitle)
+
+    const ytThumb = ytSourceThumb ?? ytSearchThumb
+    if (ytThumb && !isLowQualityImageUrl(ytThumb)) {
+      log('youtube_fallback', { title: claudeTitle })
+      const ytImg: GalleryImage = { url: ytThumb, source_url: item.source_url, site_name: 'YouTube' }
+      return { mainImg: ytThumb, gallery: [ytImg], articles: [ytImg] }
+    }
+
+    // 3순위: 이미지 완전 없음 → mainImg null → runCrawl에서 발행 거부
+    log('no_image_all_failed', { title: claudeTitle })
+    return { mainImg: null, gallery: [], articles: [] }
   }
 
   return { mainImg, gallery, articles: allImages }
@@ -668,11 +687,12 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
   )
   log('images_done', { elapsed: Date.now() - t0 })
 
-  // ── 5. 이미지 유효성 검증 (병렬 HEAD) ───────────────────────
+  // ── 5. 이미지 품질 검증 (URL 필터 + 크기 300×200 이상 확인) ──────
+  // 영구 고정: isValidTrendImage = URL 패턴 필터 + 이미지 크기 검증
   const validated = await Promise.all(
     imageResults.map(async (e) => ({
       ...e,
-      imageOk: e.mainImg ? await isValidImageUrl(e.mainImg) : false,
+      imageOk: e.mainImg ? await isValidTrendImage(e.mainImg) : false,
     }))
   )
 

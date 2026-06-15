@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { fetchOgImage, fetchRelatedGalleryImages, fetchPexelsImages, isValidImageUrl, searchYouTubeThumbnail } from '@/lib/utils/og-image'
+import { fetchOgImage, fetchRelatedGalleryImages, searchYouTubeThumbnail, isValidTrendImage, isLowQualityImageUrl } from '@/lib/utils/og-image'
 import type { GalleryImage } from '@/lib/types'
 
 export const maxDuration = 60
@@ -41,49 +41,55 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: '트렌드 없음' }, { status: 404 })
   }
 
+  // ── 이미지 품질 규칙 (영구 고정, generate-trends-crawl와 동일) ──────
+  // 1순위: 뉴스 기사 og:image (Bing News RSS → 각 기사 og:image 추출)
+  // 2순위: YouTube 관련 영상 썸네일
+  // 3순위: 없으면 해당 트렌드 삭제
+  // ✗ Pexels 사용 금지 / ✗ logo·profile·avatar·author URL 제외 / ✗ 300×200 이하 제외
   const results = await Promise.all(
     trends.map(async (trend) => {
       const isYouTube = trend.source_url.includes('youtube.com') || trend.source_url.includes('youtu.be')
       const searchQuery = trend.title.slice(0, 50)
       const engWords = (trend.title.match(/[A-Za-z][A-Za-z0-9 ]{1,}/g) ?? []).join(' ').trim()
 
-      // 모든 이미지 소스 병렬 실행
-      const [bingKo, bingEn, ogImg, ytSearchThumb, pexels] = await Promise.all([
-        fetchRelatedGalleryImages(searchQuery, trend.source_url, 4),
-        engWords.length > 2 ? fetchRelatedGalleryImages(engWords, trend.source_url, 4) : Promise.resolve<GalleryImage[]>([]),
+      // 1순위: 뉴스 기사 og:image (한국어 + 영어 병렬)
+      const [bingKo, bingEn, ogImg] = await Promise.all([
+        fetchRelatedGalleryImages(searchQuery, trend.source_url, 5),
+        engWords.length > 2 ? fetchRelatedGalleryImages(engWords, trend.source_url, 5) : Promise.resolve<GalleryImage[]>([]),
         isYouTube ? Promise.resolve<string | null>(null) : fetchOgImage(trend.source_url),
-        searchYouTubeThumbnail(searchQuery),
-        fetchPexelsImages(engWords.length > 2 ? engWords.slice(0, 50) : searchQuery.slice(0, 30), 4),
       ])
 
-      // YouTube 소스 썸네일
-      const ytSourceThumb = isYouTube ? (() => {
-        const vid = trend.source_url.match(/[?&]v=([^&]+)/)?.[1] ?? trend.source_url.match(/youtu\.be\/([^?]+)/)?.[1]
-        return vid ? `https://img.youtube.com/vi/${vid}/maxresdefault.jpg` : null
-      })() : null
-
-      // 우선순위 메인 이미지
-      const imageUrl =
-        bingKo[0]?.url ?? bingEn[0]?.url ?? ogImg ?? ytSourceThumb ?? ytSearchThumb ?? pexels[0]?.url ?? null
-
-      // 갤러리 구성 (중복 없이 4개)
+      // 갤러리 구성: 저품질 URL 즉시 제외
       const seenUrls = new Set<string>()
       const galleryImages: GalleryImage[] = []
       const addToGallery = (img: GalleryImage) => {
-        if (!seenUrls.has(img.url) && galleryImages.length < 4) {
+        if (!isLowQualityImageUrl(img.url) && !seenUrls.has(img.url) && galleryImages.length < 4) {
           seenUrls.add(img.url); galleryImages.push(img)
         }
       }
       for (const r of [...bingKo, ...bingEn]) addToGallery(r)
-      if (ytSourceThumb) addToGallery({ url: ytSourceThumb, source_url: trend.source_url, site_name: 'YouTube' })
-      if (ytSearchThumb) addToGallery({ url: ytSearchThumb, source_url: trend.source_url, site_name: 'YouTube' })
-      for (const p of pexels) addToGallery(p)
+      if (ogImg && !isLowQualityImageUrl(ogImg)) addToGallery({ url: ogImg, source_url: trend.source_url, site_name: 'og:image' })
 
-      // 이미지 유효성 검증
-      const imageOk = imageUrl ? await isValidImageUrl(imageUrl) : false
+      let imageUrl = galleryImages[0]?.url ?? null
+
+      // 2순위: YouTube 썸네일 (뉴스 이미지 없을 때)
+      if (!imageUrl) {
+        const ytVid = trend.source_url.match(/[?&]v=([^&]+)/)?.[1]
+          ?? trend.source_url.match(/youtu\.be\/([^?]+)/)?.[1]
+        const ytSourceThumb = ytVid ? `https://img.youtube.com/vi/${ytVid}/maxresdefault.jpg` : null
+        const ytSearchThumb = await searchYouTubeThumbnail(searchQuery)
+        const ytThumb = ytSourceThumb ?? ytSearchThumb
+        if (ytThumb && !isLowQualityImageUrl(ytThumb)) {
+          imageUrl = ytThumb
+          galleryImages.push({ url: ytThumb, source_url: trend.source_url, site_name: 'YouTube' })
+        }
+      }
+
+      // 이미지 품질 종합 검증 (URL 패턴 + 크기 300×200 이상)
+      const imageOk = imageUrl ? await isValidTrendImage(imageUrl) : false
 
       if (!imageOk) {
-        // 재시도 후에도 이미지 없으면 삭제
+        // 품질 기준 미달 → 트렌드 삭제
         const svcKey = process.env.SUPABASE_SERVICE_ROLE_KEY
         if (svcKey) {
           await fetch(`${SURL}/rest/v1/trends?id=eq.${trend.id}`, {
@@ -91,7 +97,7 @@ export async function POST(req: NextRequest) {
             headers: { apikey: svcKey, Authorization: `Bearer ${svcKey}` },
           })
         }
-        return { id: trend.id, title: trend.title, deleted: true, reason: '이미지 수집 실패' }
+        return { id: trend.id, title: trend.title, deleted: true, reason: '이미지 품질 기준 미달' }
       }
 
       await fetch(`${SURL}/rest/v1/trends?id=eq.${trend.id}`, {
