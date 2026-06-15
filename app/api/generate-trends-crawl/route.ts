@@ -31,7 +31,6 @@ interface ClaudeResult {
   source_id: number
   title: string
   summary: string
-  body: string
   why_trending: string
   who_affected: string
   tags: string[]
@@ -323,32 +322,61 @@ function makeJournalistPrompt(items: CrawledItem[], recentTitles: string[]): str
   const recentBlock = recentTitles.length > 0
     ? `\n이미 발행됨 (선택 금지): ${recentTitles.slice(0, 15).join(' / ')}\n`
     : ''
-  return `트렌드 에디터. 아래 ${items.length}개 중 핫한 10개를 골라 한국어 카드뉴스를 작성하세요.
+  return `당신은 트렌드 에디터입니다. 아래 ${items.length}개 중 가장 핫한 10개를 골라 한국 독자용 카드뉴스 메타데이터를 작성하세요.
 JSON 배열만 출력. 마크다운·코드블록 없음. source_id는 1부터 시작.
-모든 텍스트 필드는 매우 짧게 작성하세요(body 40자, 나머지 25자 이내).
 ${recentBlock}
-[{"source_id":N,"title":"제목(15자)","summary":"요약(25자)","body":"본문(40자)","why_trending":"이유(25자)","who_affected":"대상(20자)","tags":["태그1","태그2","태그3","태그4","태그5"],"category":"테크|SNS|푸드|뷰티|패션|라이프|디자인|광고|영상 중 하나"}]
+형식:
+[{"source_id":N,"title":"한국어 제목(20자 이내)","summary":"핵심 요약 한 문장(60자 이내, 본문과 달라야 함)","why_trending":"왜 지금 뜨는지(30자)","who_affected":"누가 영향받는지(20자)","tags":["태그1","태그2","태그3","태그4","태그5"],"category":"테크|SNS|푸드|뷰티|패션|라이프|디자인|광고|영상 중 하나"}]
 
+소스 목록:
 ${list}`
 }
 
-// 본문 확장 (Haiku — 빠르고 비용 효율적)
-async function expandBody(apiKey: string, title: string, siteName: string, description: string): Promise<string | null> {
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 600,
-        messages: [{ role: 'user', content: `다음 트렌드에 대해 400-600자 한국어 기사 본문을 작성하세요.\n배경·왜 화제·글로벌 동향·한국 의미·전망 포함. 본문만 출력.\n\n트렌드: ${title}\n출처: ${siteName}${description ? `\n설명: ${description.slice(0, 150)}` : ''}` }],
-      }),
-      signal: AbortSignal.timeout(8000),
-    })
-    if (!res.ok) return null
-    const data = await res.json()
-    return (data.content?.[0]?.text as string | undefined)?.trim() ?? null
-  } catch { return null }
+// 프리미엄 저널리스트 본문 생성 (Sonnet, 1000자 이상 필수)
+async function expandBody(apiKey: string, title: string, siteName: string, description: string, summary: string): Promise<string> {
+  const prompt = `당신은 구독료를 받는 프리미엄 저널리스트입니다. 독자들이 돈을 내고 읽는 깊이 있는 기사를 씁니다.
+
+다음 트렌드에 대해 한국어 기사 본문을 작성하세요.
+
+반드시 포함할 항목 (빠지면 실패):
+1. 배경: 이 트렌드가 생겨난 맥락과 역사적 흐름
+2. 왜 지금 뜨는가: 최근 촉발 요인, 구체적 수치·데이터·사례
+3. 글로벌 동향: 세계 주요 국가·기업·인물의 반응과 움직임
+4. 한국에서의 의미: 한국 시장·소비자·기업에 미치는 영향
+5. 전망: 앞으로 3~6개월, 1~3년 시나리오
+
+규칙:
+- 반드시 1000자 이상 (짧으면 실패)
+- 아래 핵심 요약을 그대로 반복하지 말 것 (요약과 달라야 함)
+- 제목·마크다운 헤더 없이 본문만 출력
+- 구체적 수치, 기업명, 인물명, 날짜 적극 사용
+- 독자가 "아 이래서 중요하구나" 느낄 수 있게
+
+트렌드 제목: ${title}
+출처: ${siteName}
+핵심 요약 (반복 금지): ${summary}
+${description ? `추가 정보: ${description.slice(0, 300)}` : ''}`
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 2000,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+        signal: AbortSignal.timeout(20000),
+      })
+      if (!res.ok) continue
+      const data = await res.json()
+      const body = (data.content?.[0]?.text as string | undefined)?.trim() ?? ''
+      if (body.length >= 1000) return body
+      // 1000자 미만이면 retry
+    } catch { /* retry */ }
+  }
+  return ''
 }
 
 async function generateWithClaude(items: CrawledItem[], recentTitles: string[]): Promise<{ results: ClaudeResult[], error?: string }> {
@@ -384,7 +412,6 @@ async function generateWithClaude(items: CrawledItem[], recentTitles: string[]):
           source_id: sid,
           title: String(p.title ?? '').slice(0, 80),
           summary: String(p.summary ?? '').slice(0, 200),
-          body: String(p.body ?? '').slice(0, 2000),
           why_trending: String(p.why_trending ?? '').slice(0, 500),
           who_affected: String(p.who_affected ?? '').slice(0, 300),
           tags: Array.isArray(p.tags) ? (p.tags as unknown[]).map(String).slice(0, 7) : extractTags(src?.title ?? ''),
@@ -491,15 +518,17 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
     return NextResponse.json({ error: claudeError ?? 'Claude 실패', collected: selected.length }, { status: 500 })
   }
 
-  // ── 4. 이미지 수집 + 본문 확장 병렬 실행 (INSERT 이전!) ───────
-  // 핵심: 이미지를 먼저 확정하고 INSERT → 순서 불일치 버그 완전 제거
+  // ── 4. 이미지 수집 + 프리미엄 본문 생성 병렬 실행 (INSERT 이전!) ───────
+  // 핵심: 이미지+본문을 먼저 확정하고 단일 INSERT → 순서 불일치 버그 완전 제거
   const enriched = await Promise.all(
     claudeResults.map(async (result) => {
       const item = selected[result.source_id - 1]
-      // 이미지 수집 & 본문 확장 동시 실행
+      // 이미지 수집 & 프리미엄 본문 동시 실행 (각각 독립, 서로 다른 키워드로 오염 없음)
       const [{ mainImg, gallery }, expandedBody] = await Promise.all([
         collectImages(result.title, item, result.category),
-        apiKey ? expandBody(apiKey, result.title, item.site_name, result.summary || item.description) : Promise.resolve<string | null>(null),
+        apiKey
+          ? expandBody(apiKey, result.title, item.site_name, item.description, result.summary)
+          : Promise.resolve(''),
       ])
       return { result, item, mainImg, gallery, expandedBody }
     })
@@ -513,10 +542,20 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
     }))
   )
 
-  // ── 6. 필터: 이미지 없거나 중복이면 제외 ────────────────────
+  // ── 6. 필터: 이미지 없거나 중복이거나 본문 부족하면 제외 ────
   const valid = validated.filter(e => {
-    if (!e.imageOk) { log('skip_no_image', { title: e.result.title, mainImg: e.mainImg }); return false }
-    if (isDuplicateTrend(e.result.title, e.result.tags, recentTrends)) { log('skip_duplicate', { title: e.result.title }); return false }
+    if (!e.imageOk) {
+      log('skip_no_image', { title: e.result.title, mainImg: e.mainImg })
+      return false
+    }
+    if (isDuplicateTrend(e.result.title, e.result.tags, recentTrends)) {
+      log('skip_duplicate', { title: e.result.title })
+      return false
+    }
+    if (e.expandedBody.length < 1000) {
+      log('skip_short_body', { title: e.result.title, bodyLen: e.expandedBody.length })
+      return false
+    }
     return true
   })
 
@@ -534,7 +573,7 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
       title: e.result.title,
       summary: e.result.summary,
       original_title: e.item.title,
-      body: e.expandedBody || e.result.body || null,
+      body: e.expandedBody || null,
       why_trending: e.result.why_trending || null,
       who_affected: e.result.who_affected || null,
       heat_score: e.item.heat_score,
@@ -571,7 +610,7 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
     count: valid.length,
     elapsed_ms: elapsed,
     skipped: claudeResults.length - valid.length,
-    trends: valid.map(e => ({ title: e.result.title, image_url: e.mainImg, gallery_count: e.gallery.length })),
+    trends: valid.map(e => ({ title: e.result.title, image_url: e.mainImg, gallery_count: e.gallery.length, body_length: e.expandedBody.length })),
     sources: { youtube: youtube.length, hn: hn.length, rss: selected.length - youtube.length - hn.length },
   })
 }
