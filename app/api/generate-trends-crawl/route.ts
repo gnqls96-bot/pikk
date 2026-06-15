@@ -80,6 +80,54 @@ const CATEGORY_KEYWORD: Record<string, string> = {
   '뷰티': 'beauty cosmetics skincare',
 }
 
+// ─── 카테고리별 전용 소스 (영구 고정) ──────────────────────────────
+// 규칙: 카테고리 9개 × 각 1개 = 하루 총 9개 고정 발행
+// 같은 카테고리 2개 발행 절대 금지
+const ALL_CATS: Category[] = ['푸드', '뷰티', 'SNS', '패션', '테크', '라이프', '디자인', '광고', '영상']
+
+const CAT_RSS_SOURCES: Array<{ cat: Category; url: string; name: string }> = [
+  // 푸드
+  { cat: '푸드',  url: 'https://www.eater.com/rss/index.xml',           name: 'Eater' },
+  { cat: '푸드',  url: 'https://www.seriouseats.com/atom.xml',           name: 'Serious Eats' },
+  // 뷰티
+  { cat: '뷰티',  url: 'https://www.allure.com/feed/rss',                name: 'Allure' },
+  { cat: '뷰티',  url: 'https://www.byrdie.com/rss',                     name: 'Byrdie' },
+  // 패션
+  { cat: '패션',  url: 'https://www.vogue.com/feed/rss',                 name: 'Vogue' },
+  { cat: '패션',  url: 'https://wwd.com/feed/',                          name: 'WWD' },
+  // 테크
+  { cat: '테크',  url: 'https://techcrunch.com/feed/',                   name: 'TechCrunch' },
+  { cat: '테크',  url: 'https://www.theverge.com/rss/index.xml',         name: 'The Verge' },
+  // 라이프
+  { cat: '라이프', url: 'https://lifehacker.com/rss',                    name: 'Lifehacker' },
+  { cat: '라이프', url: 'https://www.realsimple.com/syndication/rss',    name: 'Real Simple' },
+  // 디자인
+  { cat: '디자인', url: 'https://www.dezeen.com/feed/',                  name: 'Dezeen' },
+  { cat: '디자인', url: 'https://design-milk.com/feed/',                 name: 'Design Milk' },
+  // 광고
+  { cat: '광고',  url: 'https://www.adweek.com/feed/',                   name: 'Adweek' },
+  { cat: '광고',  url: 'https://www.marketingweek.com/feed/',            name: 'Marketing Week' },
+  // 영상
+  { cat: '영상',  url: 'https://variety.com/feed/',                      name: 'Variety' },
+  { cat: '영상',  url: 'https://deadline.com/feed/',                     name: 'Deadline' },
+]
+const CAT_REDDIT_SOURCES: Array<{ cat: Category; subreddit: string; minScore: number }> = [
+  { cat: '푸드',  subreddit: 'food',             minScore: 200 },
+  { cat: 'SNS',   subreddit: 'OutOfTheLoop',     minScore: 300 },
+  { cat: 'SNS',   subreddit: 'tiktokcringe',     minScore: 100 },
+  { cat: '테크',  subreddit: 'technology',        minScore: 500 },
+  { cat: '라이프', subreddit: 'selfimprovement',  minScore: 100 },
+  { cat: '영상',  subreddit: 'videos',            minScore: 500 },
+  { cat: '패션',  subreddit: 'femalefashionadvice', minScore: 100 },
+]
+// YouTube 카테고리ID → 픽크 카테고리 매핑
+const YT_CAT_MAP: Record<string, Category> = {
+  '1': '영상', '10': '영상', '23': 'SNS', '24': 'SNS',
+  '22': 'SNS', '26': '뷰티', '28': '테크',
+  '2': '라이프', '15': '라이프', '17': '라이프', '19': '라이프',
+  '20': '라이프', '25': '라이프', '27': '라이프', '29': '라이프',
+}
+
 function mapCategory(text: string, ytCategoryId?: string): Category {
   if (ytCategoryId && YT_CATEGORY_MAP[ytCategoryId]) return YT_CATEGORY_MAP[ytCategoryId]
   const lower = text.toLowerCase()
@@ -320,34 +368,44 @@ async function collectImages(
   return { mainImg, gallery, articles: allImages }
 }
 
-// ── Claude 저널리스트 ──────────────────────────────────────────
-function makeJournalistPrompt(items: CrawledItem[], recentTitles: string[]): string {
-  // 소스 번호와 원본 제목을 함께 표시 — original_title 혼입 방지
-  const list = items.map((item, i) => `${i + 1}. [${item.site_name}] ${item.title}`).join('\n')
+// ── Claude 저널리스트 (카테고리별 1개 선택) ──────────────────────
+// 영구 고정: 카테고리 9개 각 1개씩, 하루 총 9개
+function makeCategoryJournalistPrompt(
+  catGroups: Map<Category, CrawledItem[]>,
+  selected: CrawledItem[],
+  recentTitles: string[]
+): string {
   const recentBlock = recentTitles.length > 0
-    ? `\n이미 발행됨 (선택 금지): ${recentTitles.slice(0, 15).join(' / ')}\n`
+    ? `이미 발행됨 (선택 금지): ${recentTitles.slice(0, 20).join(' / ')}\n\n`
     : ''
-  return `당신은 트렌드 에디터입니다. 아래 ${items.length}개 중 가장 핫한 10개를 골라 한국 독자용 카드뉴스 메타데이터를 작성하세요.
-JSON 배열만 출력. 마크다운·코드블록 없음. source_id는 1부터 시작.
-${recentBlock}
-형식:
-[{"source_id":N,"original_title":"소스 목록의 해당 번호 제목을 번역 없이 그대로 복사","title":"한국어 제목(20자 이내)","summary":"핵심 요약 한 문장(60자 이내, 본문과 달라야 함)","heat_score":40~99,"why_trending":"왜 지금 뜨는지(30자)","who_affected":"누가 영향받는지(20자)","tags":["태그1","태그2","태그3","태그4","태그5"],"category":"테크|SNS|푸드|뷰티|패션|라이프|디자인|광고|영상 중 하나"}]
 
-heat_score 기준 (영구 고정 — 트렌드마다 반드시 다른 값):
-- 90~99: 글로벌 바이럴, 수백만 반응
-- 80~89: 광범위 화제, 주요 미디어 집중 보도
-- 70~79: 업계/커뮤니티 핫토픽
-- 60~69: 부상 중인 트렌드
-- 50~59: 관심 증가 초기 단계
-- 40~49: 틈새 관심
+  // 카테고리별 소스 블록 (전역 source_id 사용)
+  let sections = ''
+  let globalId = 1
+  const catRanges: Record<string, string> = {}
+  for (const cat of ALL_CATS) {
+    const items = catGroups.get(cat) ?? []
+    if (items.length === 0) { catRanges[cat] = '없음'; continue }
+    const start = globalId
+    sections += `\n=== ${cat} ===\n`
+    for (const item of items) {
+      sections += `${globalId}. [${item.site_name}] ${item.title}\n`
+      globalId++
+    }
+    catRanges[cat] = `${start}~${globalId - 1}`
+  }
 
-original_title 규칙 (영구 고정):
-- 반드시 소스 목록의 해당 source_id 번호의 제목을 그대로 복사
-- 번역·수정·다른 트렌드 제목 혼입 절대 금지
-- 예: source_id=3이면 "3. [사이트명] 제목" 에서 "제목" 부분만 복사
+  return `당신은 트렌드 에디터입니다. 아래 9개 카테고리에서 각 1개씩 선택하여 총 9개 출력하세요.
 
-소스 목록:
-${list}`
+${recentBlock}필수 규칙 (절대 고정):
+- 반드시 9개 출력 (카테고리당 정확히 1개)
+- 같은 카테고리 2개 선택 절대 금지
+- original_title: 해당 source_id 번호의 소스 제목을 번역 없이 그대로 복사
+- heat_score: 40~99, 트렌드마다 반드시 다른 값
+
+형식 (JSON 배열, 마크다운 없음):
+[{"source_id":N,"category":"카테고리명","original_title":"원본제목그대로","title":"한국어20자이내","summary":"요약60자이내(본문과달라야함)","heat_score":40~99,"why_trending":"30자","who_affected":"20자","tags":["태그1","태그2","태그3","태그4","태그5"]}]
+${sections}`
 }
 
 // 프리미엄 저널리스트 본문 단일 배치 생성
@@ -424,43 +482,66 @@ ${trendList}`
   }
 }
 
-async function generateWithClaude(items: CrawledItem[], recentTitles: string[]): Promise<{ results: ClaudeResult[], error?: string }> {
+// 영구 고정: 카테고리당 1개, 총 9개 선택
+// catGroups: 카테고리 → 후보 items (순서 그대로 전역 source_id 부여)
+// returns: results + selected (source_id → item 매핑용)
+async function generateWithClaude(
+  catGroups: Map<Category, CrawledItem[]>,
+  recentTitles: string[]
+): Promise<{ results: ClaudeResult[]; selected: CrawledItem[]; error?: string }> {
   const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) return { results: [], error: 'ANTHROPIC_API_KEY 미설정' }
+  if (!apiKey) return { results: [], selected: [], error: 'ANTHROPIC_API_KEY 미설정' }
+
+  // 전역 source_id 부여 (카테고리 순서로 flat)
+  const selected: CrawledItem[] = []
+  for (const cat of ALL_CATS) {
+    selected.push(...(catGroups.get(cat) ?? []))
+  }
+
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 3500,
-        messages: [{ role: 'user', content: makeJournalistPrompt(items, recentTitles) }],
+        max_tokens: 4000,
+        messages: [{ role: 'user', content: makeCategoryJournalistPrompt(catGroups, selected, recentTitles) }],
       }),
-      signal: AbortSignal.timeout(38000),
+      signal: AbortSignal.timeout(50000),
     })
-    if (!res.ok) return { results: [], error: `Claude HTTP ${res.status}: ${await res.text().catch(() => '')}`.slice(0, 200) }
+    if (!res.ok) return { results: [], selected, error: `Claude HTTP ${res.status}: ${await res.text().catch(() => '')}`.slice(0, 200) }
     const data = await res.json()
-    if (data.error) return { results: [], error: `Claude 오류: ${data.error.message}` }
+    if (data.error) return { results: [], selected, error: `Claude 오류: ${data.error.message}` }
     const text: string = data.content?.[0]?.text ?? ''
     const jsonMatch = text.match(/\[[\s\S]*\]/)
-    if (!jsonMatch) return { results: [], error: `JSON 없음. 응답: ${text.slice(0, 200)}` }
+    if (!jsonMatch) return { results: [], selected, error: `JSON 없음. 응답: ${text.slice(0, 200)}` }
     let parsed: Record<string, unknown>[]
-    try { parsed = JSON.parse(jsonMatch[0]) } catch (e) { return { results: [], error: `JSON.parse 실패: ${e}` } }
-    if (!Array.isArray(parsed)) return { results: [], error: '배열 아님' }
-    const seen = new Set<number>()
+    try { parsed = JSON.parse(jsonMatch[0]) } catch (e) { return { results: [], selected, error: `JSON.parse 실패: ${e}` } }
+    if (!Array.isArray(parsed)) return { results: [], selected, error: '배열 아님' }
+
+    const seenSourceIds = new Set<number>()
+    const seenCats = new Set<string>()
     const results = parsed
-      .filter(p => { const id = Number(p.source_id); if (!Number.isInteger(id) || id < 1 || id > items.length || seen.has(id)) return false; seen.add(id); return true })
-      .slice(0, 10)
+      .filter(p => {
+        const id = Number(p.source_id)
+        const cat = String(p.category ?? '')
+        // source_id 유효성 + 카테고리당 1개 강제
+        if (!Number.isInteger(id) || id < 1 || id > selected.length) return false
+        if (seenSourceIds.has(id)) return false
+        if (!VALID_CATS.has(cat) || seenCats.has(cat)) return false
+        seenSourceIds.add(id)
+        seenCats.add(cat)
+        return true
+      })
+      .slice(0, 9)  // 영구 고정: 최대 9개 (카테고리 9개)
       .map(p => {
-        const sid = Number(p.source_id), src = items[sid - 1]
-        // original_title 영구 고정: Claude가 반환한 original_title 우선 사용
-        // 없으면 source_id로 items 배열에서 직접 조회 — 절대 다른 트렌드 제목 사용 금지
+        const sid = Number(p.source_id), src = selected[sid - 1]
+        // original_title 영구 고정: Claude 반환값 우선, 없으면 items 배열 직접 조회
         const originalTitle = String(p.original_title ?? '').trim() || (src?.title ?? '')
-        // heat_score 영구 고정: 저널리스트 판단값 사용, 범위 벗어나면 소스값으로 대체
+        // heat_score 영구 고정: 저널리스트 판단값, 범위 벗어나면 소스값으로 대체
         const rawHeat = Number(p.heat_score)
         const heatScore = Number.isInteger(rawHeat) && rawHeat >= 40 && rawHeat <= 99
-          ? rawHeat
-          : (src?.heat_score ?? 60)
+          ? rawHeat : (src?.heat_score ?? 60)
         return {
           source_id: sid,
           original_title: originalTitle.slice(0, 300),
@@ -470,12 +551,12 @@ async function generateWithClaude(items: CrawledItem[], recentTitles: string[]):
           why_trending: String(p.why_trending ?? '').slice(0, 500),
           who_affected: String(p.who_affected ?? '').slice(0, 300),
           tags: Array.isArray(p.tags) ? (p.tags as unknown[]).map(String).slice(0, 7) : extractTags(src?.title ?? ''),
-          category: (VALID_CATS.has(String(p.category)) ? String(p.category) : mapCategory(src?.title ?? '', src?.yt_category_id)) as Category,
+          category: String(p.category) as Category,
         }
       })
-    if (results.length === 0) return { results: [], error: `검증 실패. ${parsed.length}개 파싱, items: ${items.length}` }
-    return { results }
-  } catch (e) { return { results: [], error: `예외: ${e}` } }
+    if (results.length === 0) return { results: [], selected, error: `검증 실패. ${parsed.length}개 파싱, sources: ${selected.length}` }
+    return { results, selected }
+  } catch (e) { return { results: [], selected, error: `예외: ${e}` } }
 }
 
 // ── Cron ────────────────────────────────────────────────────────
@@ -510,67 +591,68 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
     }
   }
 
-  // ── 2. 소스 수집 + 최근 7일 트렌드 병렬 조회 ─────────────────
+  // ── 2. 카테고리별 소스 수집 (모두 병렬) ────────────────────────
+  // 영구 고정: 카테고리 9개 전용 소스 → 카테고리당 1개 → 총 9개
   const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-  const [
-    ytResult, hn,
-    techcrunch, verge, bbc, reuters, aljazeera, japantimes,
-    producthunt, devto,
-    mediumTech, mediumDesign, mediumBusiness, mediumCulture,
-    redditWorld, redditTech, redditScience, redditBusiness, redditFashion, redditFood,
-    recentRes,
-  ] = await Promise.all([
+
+  const [ytResult, hnItems, recentRes, ...catFetchResults] = await Promise.all([
     fetchYouTubeTrending(),
     fetchHNTop(),
-    fetchRSSFeed('https://techcrunch.com/feed/', 'TechCrunch'),
-    fetchRSSFeed('https://www.theverge.com/rss/index.xml', 'The Verge'),
-    fetchRSSFeed('https://feeds.bbci.co.uk/news/technology/rss.xml', 'BBC Tech'),
-    fetchRSSFeed('https://feeds.reuters.com/reuters/topNews', 'Reuters'),
-    fetchRSSFeed('https://www.aljazeera.com/xml/rss/all.xml', 'Al Jazeera'),
-    fetchRSSFeed('https://www.japantimes.co.jp/feed/', 'Japan Times'),
-    fetchRSSFeed('https://www.producthunt.com/feed', 'Product Hunt'),
-    fetchDevTo(),
-    fetchRSSFeed('https://medium.com/feed/tag/technology', 'Medium'),
-    fetchRSSFeed('https://medium.com/feed/tag/design', 'Medium'),
-    fetchRSSFeed('https://medium.com/feed/tag/business', 'Medium'),
-    fetchRSSFeed('https://medium.com/feed/tag/culture', 'Medium'),
-    fetchRedditHot('worldnews', 1000),
-    fetchRedditHot('technology', 500),
-    fetchRedditHot('science', 500),
-    fetchRedditHot('business', 300),
-    fetchRedditHot('fashion', 100),
-    fetchRedditHot('food', 100),
     fetch(`${SURL}/rest/v1/trends?published_at=gte.${encodeURIComponent(since7d)}&select=title,tags&limit=50`, { headers: sbHeaders }).catch(() => null),
+    // 카테고리 전용 RSS (병렬)
+    ...CAT_RSS_SOURCES.map(s => fetchRSSFeed(s.url, s.name).then(items => ({ cat: s.cat, items }))),
+    // 카테고리 Reddit (병렬)
+    ...CAT_REDDIT_SOURCES.map(s => fetchRedditHot(s.subreddit, s.minScore).then(items => ({ cat: s.cat, items }))),
   ])
 
-  const youtube = ytResult.items
   const recentTrends: { title: string; tags: string[] }[] = recentRes?.ok
-    ? await recentRes.json().catch(() => [])
-    : []
+    ? await recentRes.json().catch(() => []) : []
   const recentTitles = recentTrends.map(t => t.title)
 
-  const combined = [
-    ...youtube.slice(0, 4), ...hn.slice(0, 4),
-    ...techcrunch.slice(0, 2), ...verge.slice(0, 2), ...bbc.slice(0, 2),
-    ...reuters.slice(0, 2), ...aljazeera.slice(0, 2), ...japantimes.slice(0, 2),
-    ...producthunt.slice(0, 2), ...devto.slice(0, 2),
-    ...mediumTech.slice(0, 1), ...mediumDesign.slice(0, 1), ...mediumBusiness.slice(0, 1), ...mediumCulture.slice(0, 1),
-    ...redditWorld.slice(0, 2), ...redditTech.slice(0, 2),
-    ...redditScience.slice(0, 1), ...redditBusiness.slice(0, 1), ...redditFashion.slice(0, 1), ...redditFood.slice(0, 1),
-  ]
-  const selected = dedup(combined).slice(0, 30)
-  log('sources', { total: selected.length, youtube: youtube.length, hn: hn.length, recent: recentTrends.length })
+  // 카테고리별 후보 구성
+  const catGroups = new Map<Category, CrawledItem[]>()
+  for (const cat of ALL_CATS) catGroups.set(cat, [])
 
-  if (selected.length === 0) {
+  // YouTube → YT 카테고리ID로 픽크 카테고리 결정
+  for (const item of ytResult.items) {
+    const cat: Category = (item.yt_category_id && YT_CAT_MAP[item.yt_category_id])
+      ? YT_CAT_MAP[item.yt_category_id]
+      : mapCategory(item.title, item.yt_category_id)
+    catGroups.get(cat)?.push(item)
+  }
+
+  // HN → 테크
+  for (const item of hnItems) catGroups.get('테크')!.push(item)
+
+  // RSS + Reddit 결과 배분
+  for (const { cat, items } of catFetchResults as Array<{ cat: Category; items: CrawledItem[] }>) {
+    catGroups.get(cat)?.push(...items)
+  }
+
+  // 카테고리 내 중복 제거, 최대 6개로 제한
+  for (const [cat, items] of catGroups) {
+    catGroups.set(cat, dedup(items).slice(0, 6))
+  }
+
+  const totalSources = [...catGroups.values()].reduce((s, v) => s + v.length, 0)
+  log('sources', {
+    total: totalSources,
+    youtube: ytResult.items.length,
+    hn: hnItems.length,
+    recent: recentTrends.length,
+    byCat: Object.fromEntries(ALL_CATS.map(c => [c, catGroups.get(c)?.length ?? 0])),
+  })
+
+  if (totalSources === 0) {
     return NextResponse.json({ error: '소스 수집 실패' }, { status: 502 })
   }
 
-  // ── 3. Claude 기사 생성 ────────────────────────────────────
-  const { results: claudeResults, error: claudeError } = await generateWithClaude(selected, recentTitles)
+  // ── 3. Claude 저널리스트 (카테고리당 1개 선택) ────────────────
+  const { results: claudeResults, selected, error: claudeError } = await generateWithClaude(catGroups, recentTitles)
   log('claude', { count: claudeResults.length, error: claudeError ?? null, elapsed: Date.now() - t0 })
 
   if (claudeResults.length === 0) {
-    return NextResponse.json({ error: claudeError ?? 'Claude 실패', collected: selected.length }, { status: 500 })
+    return NextResponse.json({ error: claudeError ?? 'Claude 실패', totalSources }, { status: 500 })
   }
 
   // ── 4. 이미지 수집 (모든 트렌드 병렬) ──────────────────────────
@@ -592,8 +674,8 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
     }))
   )
 
-  // ── 6. 필터: 이미지 없거나 중복이면 제외, 상위 7개로 제한 ──────
-  // 7개 제한 이유: 7×1000자×2tok/79tok/s=177s + 소스/저널리스트/이미지 77s = 254s < maxDuration 300s
+  // ── 6. 필터: 이미지 없거나 중복이면 제외 (카테고리당 1개 보장됨) ──
+  // 9개 상한: 9×1000자×2tok/실측161tok/s=112s + 소스/저널/이미지 80s = 192s < maxDuration 300s
   const filterLog: { title: string; reason?: string; imageOk: boolean }[] = []
   const valid = validated.filter(e => {
     const entry = { title: e.result.title, imageOk: e.imageOk }
@@ -609,7 +691,7 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
     }
     filterLog.push(entry)
     return true
-  }).slice(0, 7)  // 최대 7개: 타임아웃 방지
+  }).slice(0, 9)  // 최대 9개 (카테고리 9개 × 1개)
 
   // ── 7. 본문 생성 (이미지 수집 완료 후 단일 배치) ─────────────
   // 이미지 수집 완료 후 실행 — 이미지 HTTP와 Haiku 동시실행 시 연결 풀 포화 방지
@@ -710,6 +792,6 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
     elapsed_ms: elapsed,
     skipped: claudeResults.length - validWithBody.length,
     trends: validWithBody.map(e => ({ title: e.result.title, image_url: e.mainImg, gallery_count: e.gallery.length, body_length: e.expandedBody.length })),
-    sources: { youtube: youtube.length, hn: hn.length, rss: selected.length - youtube.length - hn.length },
+    sources: { youtube: ytResult.items.length, hn: hnItems.length, total: selected.length },
   })
 }
