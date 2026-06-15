@@ -8,7 +8,7 @@ import {
   isValidImageUrl,
 } from '@/lib/utils/og-image'
 
-export const maxDuration = 120
+export const maxDuration = 300
 
 // ── Logging ─────────────────────────────────────────────────────
 function log(msg: string, data?: unknown) {
@@ -236,84 +236,63 @@ function extractEnglishKeyword(claudeTitle: string, fallback: string): string {
   return fallback.replace(/[가-힣]/g, ' ').split(/\s+/).filter(w => w.length > 2 && /[A-Za-z]/.test(w)).slice(0, 3).join(' ').trim().slice(0, 50)
 }
 
-function titleTopicMatch(originalTitle: string, claudeTitle: string): boolean {
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9가-힣]/g, ' ')
-  const origWords = new Set(norm(originalTitle).split(/\s+/).filter(w => w.length >= 2))
-  const claudeWords = new Set(norm(claudeTitle).split(/\s+/).filter(w => w.length >= 2))
-  return [...origWords].some(w => claudeWords.has(w))
-}
-
-// 이미지 수집: 모든 소스를 병렬로 실행해 최선의 결과 선택
-// → INSERT 이전에 호출됨 (PATCH 없음, 이미지 확정 후 단일 INSERT)
+// ╔══════════════════════════════════════════════════════════════════════╗
+// ║  핵심 원칙 — 이 함수는 절대 변경 금지                                    ║
+// ║                                                                      ║
+// ║  이미지 수집 방식: 트렌드 키워드로 뉴스 기사 검색 → 각 기사 og:image 추출  ║
+// ║                                                                      ║
+// ║  절대 금지:                                                            ║
+// ║  ✗ Bing Image Search (뉴스 RSS만 허용, 이미지 직접 검색 X)               ║
+// ║  ✗ Pexels (뉴스 og:image 완전 실패 시 마지막 수단만)                     ║
+// ║  ✗ YouTube 검색 썸네일 (해당 트렌드 원본 YouTube URL 썸네일은 허용)        ║
+// ║  ✗ 다른 트렌드 기사 이미지 혼합 금지                                      ║
+// ║  ✗ 트렌드 내용과 무관한 이미지 금지                                       ║
+// ║  ✗ 이미지 없는 트렌드 발행 금지                                           ║
+// ╚══════════════════════════════════════════════════════════════════════╝
 async function collectImages(
   claudeTitle: string,
   item: CrawledItem,
   category: string = '테크'
-): Promise<{ mainImg: string | null; gallery: GalleryImage[] }> {
-  const topicMatches = titleTopicMatch(item.title, claudeTitle)
+): Promise<{ mainImg: string | null; gallery: GalleryImage[]; articles: GalleryImage[] }> {
   const engKeyword = extractEnglishKeyword(claudeTitle, item.title)
-  const catKeyword = CATEGORY_KEYWORD[category] ?? 'trending news'
 
-  // ① 모든 이미지 소스 동시 실행 (속도 최적화: 순차 X, 병렬 O)
-  const [
-    sourceOg,       // 소스 og:image (제목 일치 시)
-    bingKo,         // Bing News 한국어
-    bingEn,         // Bing News 영어
-    ytSearch,       // YouTube 검색 썸네일
-    pexelsKw,       // Pexels 키워드
-    pexelsCat,      // Pexels 카테고리 (키워드 없을 때 보충)
-  ] = await Promise.all([
-    topicMatches && item.source !== 'youtube'
-      ? fetchOgImage(item.source_url)
-      : Promise.resolve<string | null>(null),
-    fetchRelatedGalleryImages(claudeTitle, item.source_url, 4),
+  // ─────────────────────────────────────────────────────────────────────
+  // 1단계: 트렌드 키워드로 뉴스 기사 검색 (한국어 + 영어 동시)
+  //        Bing News RSS → 기사 URL → 각 기사에서 og:image 직접 추출
+  //        이것이 유일한 이미지 수집 경로 (이미지 검색 X, 스톡 사진 X)
+  // ─────────────────────────────────────────────────────────────────────
+  const [koArticleImages, enArticleImages] = await Promise.all([
+    fetchRelatedGalleryImages(claudeTitle, item.source_url, 5),
     engKeyword.length > 2
-      ? fetchRelatedGalleryImages(engKeyword, item.source_url, 4)
+      ? fetchRelatedGalleryImages(engKeyword, item.source_url, 5)
       : Promise.resolve<GalleryImage[]>([]),
-    searchYouTubeThumbnail(claudeTitle),
-    engKeyword.length > 2
-      ? fetchPexelsImages(engKeyword, 4)
-      : Promise.resolve<GalleryImage[]>([]),
-    fetchPexelsImages(catKeyword, 4),
   ])
 
-  // YouTube 소스 썸네일 (제목 일치 시)
-  const ytSourceThumb = (topicMatches && item.source === 'youtube')
-    ? (() => { const vid = item.source_url.match(/[?&]v=([^&]+)/)?.[1]; return vid ? `https://img.youtube.com/vi/${vid}/maxresdefault.jpg` : null })()
-    : null
-
-  // ② 우선순위로 메인 이미지 결정
-  const mainImg =
-    sourceOg ??
-    bingKo[0]?.url ??
-    bingEn[0]?.url ??
-    ytSourceThumb ??
-    ytSearch ??
-    pexelsKw[0]?.url ??
-    pexelsCat[0]?.url ??
-    null
-
-  // ③ 갤러리 구성 (중복 없이 4개)
+  // 2단계: 한국어 우선 합치기 (중복 이미지 URL 제거)
   const seenUrls = new Set<string>()
-  const gallery: GalleryImage[] = []
-  const addToGallery = (img: GalleryImage) => {
-    if (!seenUrls.has(img.url) && gallery.length < 4) {
+  const allImages: GalleryImage[] = []
+  for (const img of [...koArticleImages, ...enArticleImages]) {
+    if (!seenUrls.has(img.url) && allImages.length < 5) {
       seenUrls.add(img.url)
-      gallery.push(img)
+      allImages.push(img)
     }
   }
 
-  if (sourceOg && topicMatches) {
-    addToGallery({ url: sourceOg, source_url: item.source_url, site_name: item.site_name })
-  }
-  if (ytSourceThumb && topicMatches) {
-    addToGallery({ url: ytSourceThumb, source_url: item.source_url, site_name: item.site_name })
-  }
-  for (const r of [...bingKo, ...bingEn]) addToGallery(r)
-  if (ytSearch) addToGallery({ url: ytSearch, source_url: item.source_url, site_name: 'YouTube' })
-  for (const p of [...pexelsKw, ...pexelsCat]) addToGallery(p)
+  // 3단계: 메인 이미지 = 첫 번째 기사 og:image
+  //        갤러리 = 나머지 기사 og:images (최대 4개)
+  const mainImg = allImages[0]?.url ?? null
+  const gallery = allImages.slice(0, 4)
 
-  return { mainImg, gallery }
+  // 4단계: 뉴스 og:image가 하나도 없을 때만 Pexels (마지막 수단)
+  //        이 경로는 최대한 피해야 함 — 트렌드와 직접 관련 없는 이미지
+  if (!mainImg) {
+    const keyword = engKeyword.length > 2 ? engKeyword : (CATEGORY_KEYWORD[category] ?? 'trending news')
+    const pexels = await fetchPexelsImages(keyword, 4)
+    log('pexels_fallback', { title: claudeTitle, reason: 'news_og_image_all_failed' })
+    return { mainImg: pexels[0]?.url ?? null, gallery: pexels.slice(0, 4), articles: pexels }
+  }
+
+  return { mainImg, gallery, articles: allImages }
 }
 
 // ── Claude 저널리스트 ──────────────────────────────────────────
@@ -332,67 +311,78 @@ ${recentBlock}
 ${list}`
 }
 
-// 프리미엄 저널리스트 본문 배치 생성
-// 5개씩 2배치 병렬 실행으로 타임아웃 방지 (10개 단일 배치 = 75s 초과)
+// 프리미엄 저널리스트 본문 단일 배치 생성
+// ─────────────────────────────────────────────────────────────────────────
+// 본문 품질 원칙 (절대 변경 금지):
+// - 1000자 이상 필수 (미달 시 해당 트렌드 발행 거부)
+// - 배경+왜뜨는가+글로벌동향+한국의미+전망 전부 포함
+// - 핵심 요약과 달라야 함 (요약 반복 금지)
+//
+// 타임아웃 계산 (최악 케이스 기준):
+// 7개 × 1000자 × 2 tokens/자 = 14,000 tokens ÷ 79 tok/s = 177s
+// 소스(10s) + 저널리스트(30s) + 이미지(37s) + 본문(177s) = 254s < maxDuration(300s) ✓
+// → 8개 이상은 300s 초과 위험 → 상위 7개로 제한 (step 7에서 slice)
+// ─────────────────────────────────────────────────────────────────────────
 async function expandAllBodies(
   apiKey: string,
   trends: { title: string; siteName: string; description: string; summary: string }[]
 ): Promise<string[]> {
 
-  async function runBatch(batch: typeof trends, offset: number): Promise<string[]> {
-    const trendList = batch.map((t, i) =>
-      `${offset + i + 1}. 제목: ${t.title}\n   출처: ${t.siteName}\n   핵심요약(반복금지): ${t.summary}\n   ${t.description ? `설명: ${t.description.slice(0, 150)}` : ''}`
-    ).join('\n\n')
+  const trendList = trends.map((t, i) =>
+    `${i + 1}. 제목: ${t.title}\n   출처: ${t.siteName}\n   핵심요약(반복금지): ${t.summary}\n   ${t.description ? `설명: ${t.description.slice(0, 200)}` : ''}`
+  ).join('\n\n')
 
-    const prompt = `당신은 구독료를 받는 프리미엄 저널리스트입니다.
+  // 출력 형식: JSON 배열 X → 구분자 텍스트 (JSON 이스케이프 오류 원천 차단)
+  const prompt = `당신은 구독료를 받는 프리미엄 저널리스트입니다. 독자들이 돈을 내고 읽는 깊이 있는 기사를 씁니다.
 
-아래 ${batch.length}개 트렌드 각각에 대해 한국어 기사 본문을 작성하세요.
+아래 ${trends.length}개 트렌드 각각에 대해 한국어 기사 본문을 작성하세요.
 
-각 본문에 반드시 포함:
-1. 배경: 맥락과 역사적 흐름
-2. 왜 지금 뜨는가: 수치·데이터·사례
-3. 글로벌 동향: 주요 국가·기업·인물 반응
-4. 한국에서의 의미: 한국 시장·소비자·기업 영향
-5. 전망: 3~6개월, 1~3년 시나리오
+각 본문에 반드시 포함 (빠지면 실패):
+1. 배경: 이 트렌드가 생겨난 맥락과 역사적 흐름
+2. 왜 지금 뜨는가: 최근 촉발 요인, 구체적 수치·데이터·사례
+3. 글로벌 동향: 세계 주요 국가·기업·인물의 반응과 움직임
+4. 한국에서의 의미: 한국 시장·소비자·기업에 미치는 영향
+5. 전망: 앞으로 3~6개월, 1~3년 시나리오
 
-규칙: 각 본문 600~800자 | 핵심요약 반복 금지 | 구체적 수치·기업명·인물명 사용 | 제목·헤더 없이 본문만
-출력: JSON 배열만 ["본문1", ..., "본문${batch.length}"] (마크다운·코드블록 없음)
+규칙:
+- 각 본문 반드시 1000자 이상 (절대 기준)
+- "핵심요약"을 그대로 반복하지 말 것
+- 구체적 수치, 기업명, 인물명, 날짜 적극 사용
+- 제목·마크다운 헤더 없이 본문만 출력
+
+출력 형식 (이것만 허용):
+===BODY_1===
+(트렌드 1 본문)
+===BODY_2===
+(트렌드 2 본문)
+...
 
 트렌드:
 ${trendList}`
 
-    try {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 8000,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-        signal: AbortSignal.timeout(60000),
-      })
-      if (!res.ok) { log('expandBodies_error', { status: res.status, offset }); return batch.map(() => '') }
-      const data = await res.json()
-      const text: string = data.content?.[0]?.text ?? ''
-      const match = text.match(/\[[\s\S]*\]/)
-      if (!match) { log('expandBodies_no_json', { offset, preview: text.slice(0, 200) }); return batch.map(() => '') }
-      const parsed: unknown[] = JSON.parse(match[0])
-      if (!Array.isArray(parsed)) return batch.map(() => '')
-      return parsed.map(b => String(b ?? '').trim())
-    } catch (e) {
-      log('expandBodies_exception', { error: String(e), offset })
-      return batch.map(() => '')
-    }
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 16000,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal: AbortSignal.timeout(190000),  // 190s: 7×1000자×2tok/79tok/s=177s + 여유 13s
+    })
+    if (!res.ok) { log('expandBodies_error', { status: res.status }); return trends.map(() => '') }
+    const data = await res.json()
+    const text: string = data.content?.[0]?.text ?? ''
+    const sections = text.split(/===BODY_\d+===/).map(s => s.trim()).filter(Boolean)
+    log('expandBodies_done', { sections: sections.length, firstLen: sections[0]?.length ?? 0 })
+    if (sections.length === 0) { log('expandBodies_no_sections', { preview: text.slice(0, 300) }); return trends.map(() => '') }
+    while (sections.length < trends.length) sections.push('')
+    return sections.slice(0, trends.length)
+  } catch (e) {
+    log('expandBodies_exception', { error: String(e) })
+    return trends.map(() => '')
   }
-
-  // 5개씩 2배치 병렬 실행 → 각 ~35s, 총 ~35s (병렬)
-  const half = Math.ceil(trends.length / 2)
-  const [bodies1, bodies2] = await Promise.all([
-    runBatch(trends.slice(0, half), 0),
-    runBatch(trends.slice(half), half),
-  ])
-  return [...bodies1, ...bodies2]
 }
 
 async function generateWithClaude(items: CrawledItem[], recentTitles: string[]): Promise<{ results: ClaudeResult[], error?: string }> {
@@ -534,41 +524,30 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
     return NextResponse.json({ error: claudeError ?? 'Claude 실패', collected: selected.length }, { status: 500 })
   }
 
-  // ── 4. 이미지 수집 + 프리미엄 본문 생성 병렬 실행 (INSERT 이전!) ───────
+  // ── 4. 이미지 수집 (모든 트렌드 병렬) ──────────────────────────
   // 핵심: 이미지+본문을 먼저 확정하고 단일 INSERT → 순서 불일치 버그 완전 제거
-  // 본문: 10개 Sonnet 병렬 대신 단일 배치 호출 (타임아웃 방지)
-  const [imageResults, bodies] = await Promise.all([
-    Promise.all(claudeResults.map(async (result) => {
+  // 순서: ① 이미지 수집 완료 → ② 본문 생성 (100+ 이미지 HTTP와 Haiku 동시실행 시 연결 풀 포화)
+  const imageResults = await Promise.all(
+    claudeResults.map(async (result) => {
       const item = selected[result.source_id - 1]
       return { result, item, ...(await collectImages(result.title, item, result.category)) }
-    })),
-    apiKey
-      ? expandAllBodies(apiKey, claudeResults.map(r => ({
-          title: r.title,
-          siteName: selected[r.source_id - 1]?.site_name ?? '',
-          description: selected[r.source_id - 1]?.description ?? '',
-          summary: r.summary,
-        })))
-      : Promise.resolve(claudeResults.map(() => '')),
-  ])
-
-  const enriched = imageResults.map((img, i) => ({
-    ...img,
-    expandedBody: bodies[i] ?? '',
-  }))
+    })
+  )
+  log('images_done', { elapsed: Date.now() - t0 })
 
   // ── 5. 이미지 유효성 검증 (병렬 HEAD) ───────────────────────
   const validated = await Promise.all(
-    enriched.map(async (e) => ({
+    imageResults.map(async (e) => ({
       ...e,
       imageOk: e.mainImg ? await isValidImageUrl(e.mainImg) : false,
     }))
   )
 
-  // ── 6. 필터: 이미지 없거나 중복이거나 본문 부족하면 제외 ────
-  const filterLog: { title: string; reason?: string; bodyLen: number; imageOk: boolean }[] = []
+  // ── 6. 필터: 이미지 없거나 중복이면 제외, 상위 7개로 제한 ──────
+  // 7개 제한 이유: 7×1000자×2tok/79tok/s=177s + 소스/저널리스트/이미지 77s = 254s < maxDuration 300s
+  const filterLog: { title: string; reason?: string; imageOk: boolean }[] = []
   const valid = validated.filter(e => {
-    const entry = { title: e.result.title, bodyLen: e.expandedBody.length, imageOk: e.imageOk }
+    const entry = { title: e.result.title, imageOk: e.imageOk }
     if (!e.imageOk) {
       log('skip_no_image', { title: e.result.title, mainImg: e.mainImg })
       filterLog.push({ ...entry, reason: 'no_image' })
@@ -579,34 +558,69 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
       filterLog.push({ ...entry, reason: 'duplicate' })
       return false
     }
-    if (e.expandedBody.length < 300) {
+    filterLog.push(entry)
+    return true
+  }).slice(0, 7)  // 최대 7개: 타임아웃 방지
+
+  // ── 7. 본문 생성 (이미지 수집 완료 후 단일 배치) ─────────────
+  // 이미지 수집 완료 후 실행 — 이미지 HTTP와 Haiku 동시실행 시 연결 풀 포화 방지
+  const bodies = apiKey
+    ? await expandAllBodies(apiKey, valid.map(e => ({
+        title: e.result.title,
+        siteName: selected[e.result.source_id - 1]?.site_name ?? '',
+        description: selected[e.result.source_id - 1]?.description ?? '',
+        summary: e.result.summary,
+      })))
+    : valid.map(() => '')
+
+  const enriched = valid.map((e, i) => ({
+    ...e,
+    expandedBody: bodies[i] ?? '',
+  }))
+
+  // ── 8. 본문 길이 필터: 1000자 미만이면 제외 ────────────────────
+  const bodyFilterLog: { title: string; reason?: string; bodyLen: number }[] = []
+  const validWithBody = enriched.filter(e => {
+    const entry = { title: e.result.title, bodyLen: e.expandedBody.length }
+    if (e.expandedBody.length < 1000) {
       log('skip_short_body', { title: e.result.title, bodyLen: e.expandedBody.length })
-      filterLog.push({ ...entry, reason: 'short_body' })
+      bodyFilterLog.push({ ...entry, reason: 'short_body' })
       return false
     }
-    filterLog.push(entry)
+    bodyFilterLog.push(entry)
     return true
   })
 
-  log('filter', { total: claudeResults.length, valid: valid.length, elapsed: Date.now() - t0, filterLog })
+  log('filter', {
+    total: claudeResults.length,
+    passed_image: valid.length,
+    passed_body: validWithBody.length,
+    elapsed: Date.now() - t0,
+    filterLog,
+    bodyFilterLog,
+  })
 
-  if (valid.length === 0) {
+  if (validWithBody.length === 0) {
     return NextResponse.json({
       error: '유효한 트렌드 없음',
       collected: selected.length,
       filterLog,
+      bodyFilterLog,
     }, { status: 500 })
   }
 
-  // ── 7. 단일 INSERT (이미지+본문 포함) ────────────────────────
+  // ── 9. 단일 INSERT (이미지+본문 포함) ────────────────────────
   // → PATCH 불필요, 순서 불일치 버그 없음
-  const rows = valid.map(e => {
-    const relatedSources: RelatedSource[] = [{ title: e.item.title, url: e.item.source_url, site_name: e.item.site_name }]
+  // → related_sources = 뉴스 기사 수집 결과 (이미지 출처 그대로)
+  const rows = validWithBody.map(e => {
+    const relatedSources: RelatedSource[] = e.articles.length > 0
+      ? e.articles.map(a => ({ title: a.site_name, url: a.source_url, site_name: a.site_name }))
+      : [{ title: e.item.title, url: e.item.source_url, site_name: e.item.site_name }]
     return {
       title: e.result.title,
       summary: e.result.summary,
       original_title: e.item.title,
-      body: e.expandedBody || null,
+      body: e.expandedBody,
       why_trending: e.result.why_trending || null,
       who_affected: e.result.who_affected || null,
       heat_score: e.item.heat_score,
@@ -634,16 +648,16 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
 
   const elapsed = Date.now() - t0
   log('crawl_done', {
-    trigger, elapsed_ms: elapsed, inserted: valid.length,
-    trends: valid.map(e => ({ title: e.result.title, image_url: e.mainImg, gallery: e.gallery.length })),
+    trigger, elapsed_ms: elapsed, inserted: validWithBody.length,
+    trends: validWithBody.map(e => ({ title: e.result.title, image_url: e.mainImg, gallery: e.gallery.length, body_length: e.expandedBody.length })),
   })
 
   return NextResponse.json({
     success: true,
-    count: valid.length,
+    count: validWithBody.length,
     elapsed_ms: elapsed,
-    skipped: claudeResults.length - valid.length,
-    trends: valid.map(e => ({ title: e.result.title, image_url: e.mainImg, gallery_count: e.gallery.length, body_length: e.expandedBody.length })),
+    skipped: claudeResults.length - validWithBody.length,
+    trends: validWithBody.map(e => ({ title: e.result.title, image_url: e.mainImg, gallery_count: e.gallery.length, body_length: e.expandedBody.length })),
     sources: { youtube: youtube.length, hn: hn.length, rss: selected.length - youtube.length - hn.length },
   })
 }
