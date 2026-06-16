@@ -453,6 +453,8 @@ function makeCategoryJournalistPrompt(
 ${recentBlock}필수 규칙 (절대 고정):
 - 반드시 9개 출력 (카테고리당 정확히 1개)
 - 같은 카테고리 2개 선택 절대 금지
+- 출력은 유효한 JSON이어야 함: 문자열 값 안에 줄바꿈을 절대 넣지 말고 한 줄로 이어 쓸 것
+- 문자열 값 안에서 큰따옴표(")를 쓰지 말 것 (강조가 필요하면 따옴표 없이 표현)
 - original_title: 해당 source_id 번호의 소스 제목(영어 원문)을 번역 없이 그대로 복사
 - heat_score: 40~99, 트렌드마다 반드시 다른 값
 - why_trending: 왜 지금 뜨는지 3문장 이상, 구체적 수치·사례·브랜드명 포함 (120자 이상)
@@ -539,6 +541,41 @@ ${trendList}`
   }
 }
 
+// Claude가 JSON 문자열 값 안에 raw 줄바꿈/탭을 그대로 넣어버리는 경우가 있어
+// (why_trending 3문장 이상 요구 후 발생) 표준 JSON.parse가 실패함.
+// 1차: 그대로 파싱 → 2차: 문자열 리터럴 내부의 raw 제어문자만 \n으로 escape 후 재시도.
+function parseClaudeJsonArray(text: string): { parsed: Record<string, unknown>[] | null; raw: string | null } {
+  const jsonMatch = text.match(/\[[\s\S]*\]/)
+  if (!jsonMatch) return { parsed: null, raw: null }
+  const raw = jsonMatch[0]
+  try {
+    const parsed = JSON.parse(raw)
+    return { parsed: Array.isArray(parsed) ? parsed : null, raw }
+  } catch {}
+  try {
+    let repaired = ''
+    let inString = false
+    let escaped = false
+    for (const ch of raw) {
+      if (inString) {
+        if (escaped) { repaired += ch; escaped = false; continue }
+        if (ch === '\\') { repaired += ch; escaped = true; continue }
+        if (ch === '"') { inString = false; repaired += ch; continue }
+        if (ch === '\n') { repaired += '\\n'; continue }
+        if (ch === '\r') { continue }
+        if (ch === '\t') { repaired += ' '; continue }
+        repaired += ch
+        continue
+      }
+      if (ch === '"') inString = true
+      repaired += ch
+    }
+    const parsed = JSON.parse(repaired)
+    return { parsed: Array.isArray(parsed) ? parsed : null, raw }
+  } catch {}
+  return { parsed: null, raw }
+}
+
 // 영구 고정: 카테고리당 1개, 총 9개 선택
 // catGroups: 카테고리 → 후보 items (순서 그대로 전역 source_id 부여)
 // returns: results + selected (source_id → item 매핑용)
@@ -571,11 +608,11 @@ async function generateWithClaude(
     const data = await res.json()
     if (data.error) return { results: [], selected, error: `Claude 오류: ${data.error.message}` }
     const text: string = data.content?.[0]?.text ?? ''
-    const jsonMatch = text.match(/\[[\s\S]*\]/)
-    if (!jsonMatch) return { results: [], selected, error: `JSON 없음. 응답: ${text.slice(0, 200)}` }
-    let parsed: Record<string, unknown>[]
-    try { parsed = JSON.parse(jsonMatch[0]) } catch (e) { return { results: [], selected, error: `JSON.parse 실패: ${e}` } }
-    if (!Array.isArray(parsed)) return { results: [], selected, error: '배열 아님' }
+    const { parsed, raw } = parseClaudeJsonArray(text)
+    if (!parsed) {
+      log('claude_parse_fail', { raw: (raw ?? text).slice(0, 4000) })
+      return { results: [], selected, error: `JSON 파싱 실패. 응답: ${text.slice(0, 200)}` }
+    }
 
     const seenSourceIds = new Set<number>()
     const seenCats = new Set<string>()
@@ -643,6 +680,8 @@ ${recentBlock}각 항목에 대해 정확히 하나씩 출력하세요 (총 ${it
 - why_trending: 3문장 이상, 구체적 수치·사례·브랜드명 포함 (120자 이상)
 - who_affected: 어떤 업계·소비자층이 주목하는지 구체적으로 (60자 이상)
 - tags: 정확히 5개 이상 (최대 7개)
+- 출력은 유효한 JSON이어야 함: 문자열 값 안에 줄바꿈을 절대 넣지 말고 한 줄로 이어 쓸 것
+- 문자열 값 안에서 큰따옴표(")를 쓰지 말 것 (강조가 필요하면 따옴표 없이 표현)
 
 형식 (JSON 배열, 마크다운 없음):
 [{"source_id":N,"category":"카테고리명","original_title":"영어원본제목그대로","title":"한국어20자이내","summary":"요약60자이내","heat_score":40~99,"why_trending":"3문장이상120자이상","who_affected":"60자이상구체적","tags":["태그1","태그2","태그3","태그4","태그5"]}]
@@ -663,10 +702,8 @@ ${sections}`
     if (!res.ok) return []
     const data = await res.json()
     const text: string = data.content?.[0]?.text ?? ''
-    const jsonMatch = text.match(/\[[\s\S]*\]/)
-    if (!jsonMatch) return []
-    const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>[]
-    if (!Array.isArray(parsed)) return []
+    const { parsed } = parseClaudeJsonArray(text)
+    if (!parsed) return []
 
     const bySourceId = new Map(items.map(it => [it.source_id, it]))
     const results: ClaudeResult[] = []
