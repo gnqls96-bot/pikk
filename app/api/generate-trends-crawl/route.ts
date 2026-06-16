@@ -544,7 +544,7 @@ ${trendList}`
 // Claude가 JSON 문자열 값 안에 raw 줄바꿈/탭을 그대로 넣어버리는 경우가 있어
 // (why_trending 3문장 이상 요구 후 발생) 표준 JSON.parse가 실패함.
 // 1차: 그대로 파싱 → 2차: 문자열 리터럴 내부의 raw 제어문자만 \n으로 escape 후 재시도.
-function parseClaudeJsonArray(text: string): { parsed: Record<string, unknown>[] | null; raw: string | null } {
+function parseClaudeJsonArray(text: string): { parsed: Record<string, unknown>[] | null; raw: string | null; error?: string } {
   const jsonMatch = text.match(/\[[\s\S]*\]/)
   if (!jsonMatch) return { parsed: null, raw: null }
   const raw = jsonMatch[0]
@@ -552,8 +552,8 @@ function parseClaudeJsonArray(text: string): { parsed: Record<string, unknown>[]
     const parsed = JSON.parse(raw)
     return { parsed: Array.isArray(parsed) ? parsed : null, raw }
   } catch {}
+  let repaired = ''
   try {
-    let repaired = ''
     let inString = false
     let escaped = false
     for (const ch of raw) {
@@ -572,8 +572,9 @@ function parseClaudeJsonArray(text: string): { parsed: Record<string, unknown>[]
     }
     const parsed = JSON.parse(repaired)
     return { parsed: Array.isArray(parsed) ? parsed : null, raw }
-  } catch {}
-  return { parsed: null, raw }
+  } catch (e) {
+    return { parsed: null, raw: repaired || raw, error: String(e) }
+  }
 }
 
 // 영구 고정: 카테고리당 1개, 총 9개 선택
@@ -608,9 +609,12 @@ async function generateWithClaude(
     const data = await res.json()
     if (data.error) return { results: [], selected, error: `Claude 오류: ${data.error.message}` }
     const text: string = data.content?.[0]?.text ?? ''
-    const { parsed, raw } = parseClaudeJsonArray(text)
+    const { parsed, raw, error: parseError } = parseClaudeJsonArray(text)
     if (!parsed) {
-      log('claude_parse_fail', { raw: (raw ?? text).slice(0, 4000) })
+      const body = raw ?? text
+      const pos = Number(parseError?.match(/position (\d+)/)?.[1] ?? -1)
+      const around = pos >= 0 ? body.slice(Math.max(0, pos - 300), pos + 300) : body.slice(0, 4000)
+      log('claude_parse_fail', { parseError, len: body.length, pos, around })
       return { results: [], selected, error: `JSON 파싱 실패. 응답: ${text.slice(0, 200)}` }
     }
 
