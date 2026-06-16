@@ -88,12 +88,15 @@ const CAT_RSS_SOURCES: Array<{ cat: Category; url: string; name: string }> = [
   // 푸드
   { cat: '푸드',  url: 'https://www.eater.com/rss/index.xml',           name: 'Eater' },
   { cat: '푸드',  url: 'https://www.seriouseats.com/atom.xml',           name: 'Serious Eats' },
+  { cat: '푸드',  url: 'https://www.bonappetit.com/feed/rss',            name: 'Bon Appétit' },
   // 뷰티
   { cat: '뷰티',  url: 'https://www.allure.com/feed/rss',                name: 'Allure' },
   { cat: '뷰티',  url: 'https://www.byrdie.com/rss',                     name: 'Byrdie' },
+  { cat: '뷰티',  url: 'https://wwd.com/beauty-industry-news/feed/',     name: 'WWD Beauty' },
   // 패션
   { cat: '패션',  url: 'https://www.vogue.com/feed/rss',                 name: 'Vogue' },
   { cat: '패션',  url: 'https://wwd.com/feed/',                          name: 'WWD' },
+  { cat: '패션',  url: 'https://hypebeast.com/feed',                     name: 'Hypebeast' },
   // 테크
   { cat: '테크',  url: 'https://techcrunch.com/feed/',                   name: 'TechCrunch' },
   { cat: '테크',  url: 'https://www.theverge.com/rss/index.xml',         name: 'The Verge' },
@@ -116,8 +119,10 @@ const CAT_REDDIT_SOURCES: Array<{ cat: Category; subreddit: string; minScore: nu
   { cat: '푸드',  subreddit: 'food',             minScore: 200 },
   { cat: 'SNS',   subreddit: 'OutOfTheLoop',     minScore: 300 },
   { cat: 'SNS',   subreddit: 'tiktokcringe',     minScore: 100 },
+  { cat: 'SNS',   subreddit: 'socialmedia',      minScore: 30 },
   { cat: '테크',  subreddit: 'technology',        minScore: 500 },
   { cat: '라이프', subreddit: 'selfimprovement',  minScore: 100 },
+  { cat: '라이프', subreddit: 'lifestyle',        minScore: 50 },
   { cat: '영상',  subreddit: 'videos',            minScore: 500 },
   { cat: '패션',  subreddit: 'femalefashionadvice', minScore: 100 },
 ]
@@ -145,6 +150,17 @@ function extractTags(title: string): string[] {
       .map(w => w.replace(/[^a-zA-Z0-9가-힣]/g, ''))
       .filter(w => w.length > 1).slice(0, 5)
   )]
+}
+
+// 영구 고정: 태그 5개 미달이면 원본 제목에서 추출해 보충 (최대 7개)
+function ensureMinTags(tags: string[], fallbackTitle: string, min = 5, max = 7): string[] {
+  const result = [...new Set(tags.filter(Boolean))]
+  if (result.length >= min) return result.slice(0, max)
+  for (const t of extractTags(fallbackTitle)) {
+    if (result.length >= min) break
+    if (!result.includes(t)) result.push(t)
+  }
+  return result.slice(0, max)
 }
 
 function calcHeatFromLog(value: number, base = 50): number {
@@ -311,16 +327,22 @@ function extractEnglishKeyword(claudeTitle: string, fallback: string): string {
 }
 
 // ╔══════════════════════════════════════════════════════════════════════╗
-// ║  핵심 원칙 — 이 함수는 절대 변경 금지                                    ║
+// ║  핵심 원칙 — 이 함수는 절대 변경 금지 (2026-06-16 영구 고정)              ║
 // ║                                                                      ║
-// ║  이미지 수집 방식: 트렌드 키워드로 뉴스 기사 검색 → 각 기사 og:image 추출  ║
+// ║  이미지 수집 방식:                                                     ║
+// ║   1순위: 트렌드 키워드로 뉴스 기사 4~5개 검색 → 각 기사 og:image 직접 추출 ║
+// ║          (해당 트렌드의 키워드만 사용 — 병렬 처리해도 트렌드 간 혼용 금지)   ║
+// ║          기사 이미지가 품질 기준 미달이면 자동으로 다음 기사로 넘어감       ║
+// ║          첫 통과 기사 og:image = 메인, 나머지 통과 기사 = 갤러리(최대 4)   ║
+// ║   2순위: 갤러리가 4개 미달이면 YouTube 썸네일로 남은 슬롯만 보충           ║
+// ║          (뉴스 기사 이미지가 0개면 YouTube 썸네일이 메인 이미지를 대체)    ║
+// ║   3순위: 그래도 이미지가 전혀 없으면 mainImg=null → 해당 트렌드 발행 거부   ║
 // ║                                                                      ║
 // ║  절대 금지:                                                            ║
-// ║  ✗ Bing Image Search (뉴스 RSS만 허용, 이미지 직접 검색 X)               ║
-// ║  ✗ Pexels (뉴스 og:image 완전 실패 시 마지막 수단만)                     ║
-// ║  ✗ YouTube 검색 썸네일 (해당 트렌드 원본 YouTube URL 썸네일은 허용)        ║
+// ║  ✗ Bing Image Search / 이미지 직접 검색 (뉴스 RSS → og:image 추출만 허용) ║
+// ║  ✗ Pexels (뉴스 og:image + YouTube 모두 실패한 마지막 수단만 — 현재 미사용)║
 // ║  ✗ 다른 트렌드 기사 이미지 혼합 금지                                      ║
-// ║  ✗ 트렌드 내용과 무관한 이미지 금지                                       ║
+// ║  ✗ 로고/프로필/아바타/워터마크 이미지, 300x200 미만 이미지                ║
 // ║  ✗ 이미지 없는 트렌드 발행 금지                                           ║
 // ╚══════════════════════════════════════════════════════════════════════╝
 async function collectImages(
@@ -356,7 +378,6 @@ async function collectImages(
 
   // 3단계: 메인 이미지 = 첫 번째 기사 og:image, 갤러리 = 나머지 최대 4개
   const mainImg = allImages[0]?.url ?? null
-  const gallery = allImages.slice(0, 4)
 
   // ─────────────────────────────────────────────────────────────────
   // 4단계 폴백 (영구 고정 우선순위):
@@ -386,7 +407,17 @@ async function collectImages(
     return { mainImg: null, gallery: [], articles: [] }
   }
 
-  return { mainImg, gallery, articles: allImages }
+  // 영구 고정: 뉴스 기사로 갤러리 4개를 못 채우면 메인 이미지는 그대로 두고
+  // YouTube 썸네일로 남은 슬롯만 보충 (메인 이미지를 대체하지 않음)
+  if (allImages.length < 4) {
+    const ytThumb = await searchYouTubeThumbnail(claudeTitle)
+    if (ytThumb && !isLowQualityImageUrl(ytThumb) && !allImages.some(img => img.url === ytThumb)) {
+      log('gallery_youtube_supplement', { title: claudeTitle })
+      allImages.push({ url: ytThumb, source_url: item.source_url, site_name: 'YouTube' })
+    }
+  }
+
+  return { mainImg, gallery: allImages.slice(0, 4), articles: allImages }
 }
 
 // ── Claude 저널리스트 (카테고리별 1개 선택) ──────────────────────
@@ -421,11 +452,15 @@ function makeCategoryJournalistPrompt(
 ${recentBlock}필수 규칙 (절대 고정):
 - 반드시 9개 출력 (카테고리당 정확히 1개)
 - 같은 카테고리 2개 선택 절대 금지
-- original_title: 해당 source_id 번호의 소스 제목을 번역 없이 그대로 복사
+- original_title: 해당 source_id 번호의 소스 제목(영어 원문)을 번역 없이 그대로 복사
 - heat_score: 40~99, 트렌드마다 반드시 다른 값
+- why_trending: 왜 지금 뜨는지 3문장 이상, 구체적 수치·사례·브랜드명 포함 (120자 이상)
+- who_affected: 어떤 업계·소비자층이 주목하는지 구체적으로 (60자 이상)
+- tags: 정확히 5개 이상 (최대 7개)
+- summary는 본문 요약이지만 본문 그대로 반복하면 안 됨
 
 형식 (JSON 배열, 마크다운 없음):
-[{"source_id":N,"category":"카테고리명","original_title":"원본제목그대로","title":"한국어20자이내","summary":"요약60자이내(본문과달라야함)","heat_score":40~99,"why_trending":"30자","who_affected":"20자","tags":["태그1","태그2","태그3","태그4","태그5"]}]
+[{"source_id":N,"category":"카테고리명","original_title":"영어원본제목그대로","title":"한국어20자이내","summary":"요약60자이내(본문과달라야함)","heat_score":40~99,"why_trending":"3문장이상120자이상","who_affected":"60자이상구체적","tags":["태그1","태그2","태그3","태그4","태그5"]}]
 ${sections}`
 }
 
@@ -571,7 +606,8 @@ async function generateWithClaude(
           heat_score: heatScore,
           why_trending: String(p.why_trending ?? '').slice(0, 500),
           who_affected: String(p.who_affected ?? '').slice(0, 300),
-          tags: Array.isArray(p.tags) ? (p.tags as unknown[]).map(String).slice(0, 7) : extractTags(src?.title ?? ''),
+          // 영구 고정: 태그 5개 미달 시 원본 제목에서 보충
+          tags: ensureMinTags(Array.isArray(p.tags) ? (p.tags as unknown[]).map(String) : [], src?.title ?? originalTitle),
           category: String(p.category) as Category,
         }
       })
@@ -600,11 +636,14 @@ async function generateRetryEditorial(
   const prompt = `당신은 트렌드 에디터입니다. 아래 ${items.length}개 소스 각각에 대해 카드뉴스용 메타데이터를 작성하세요.
 
 ${recentBlock}각 항목에 대해 정확히 하나씩 출력하세요 (총 ${items.length}개).
-- original_title: 해당 source_id 번호의 소스 제목을 번역 없이 그대로 복사
+- original_title: 해당 source_id 번호의 소스 제목(영어 원문)을 번역 없이 그대로 복사
 - heat_score: 40~99, 트렌드마다 반드시 다른 값
+- why_trending: 3문장 이상, 구체적 수치·사례·브랜드명 포함 (120자 이상)
+- who_affected: 어떤 업계·소비자층이 주목하는지 구체적으로 (60자 이상)
+- tags: 정확히 5개 이상 (최대 7개)
 
 형식 (JSON 배열, 마크다운 없음):
-[{"source_id":N,"category":"카테고리명","original_title":"원본제목그대로","title":"한국어20자이내","summary":"요약60자이내","heat_score":40~99,"why_trending":"30자","who_affected":"20자","tags":["태그1","태그2","태그3","태그4","태그5"]}]
+[{"source_id":N,"category":"카테고리명","original_title":"영어원본제목그대로","title":"한국어20자이내","summary":"요약60자이내","heat_score":40~99,"why_trending":"3문장이상120자이상","who_affected":"60자이상구체적","tags":["태그1","태그2","태그3","태그4","태그5"]}]
 
 ${sections}`
 
@@ -644,7 +683,7 @@ ${sections}`
         heat_score: heatScore,
         why_trending: String(p.why_trending ?? '').slice(0, 500),
         who_affected: String(p.who_affected ?? '').slice(0, 300),
-        tags: Array.isArray(p.tags) ? (p.tags as unknown[]).map(String).slice(0, 7) : extractTags(matched.item.title),
+        tags: ensureMinTags(Array.isArray(p.tags) ? (p.tags as unknown[]).map(String) : [], matched.item.title),
         category: matched.category,
       })
     }
@@ -653,6 +692,8 @@ ${sections}`
 }
 
 // ── Cron ────────────────────────────────────────────────────────
+// 영구 고정: 매일 06:00 KST = UTC 21:00 (vercel.json "0 21 * * *"), 실패 시 07:30 KST 재시도("30 22 * * *")
+// CRON_SECRET 환경변수가 설정되어 있으면 Vercel이 자동으로 Authorization 헤더를 붙여 보내고, 여기서 검증한다.
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET
   if (secret && req.headers.get('authorization') !== `Bearer ${secret}`) {
@@ -662,6 +703,13 @@ export async function GET(req: NextRequest) {
 }
 export async function POST() { return runCrawl('manual') }
 
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║  영구 규칙 — 기존 데이터 보호 (Cron이든 수동 실행이든 동일하게 적용)    ║
+// ║  이 함수는 절대 DELETE를 호출하지 않는다. 오늘 날짜 새 트렌드를         ║
+// ║  INSERT만 한다. 기존 트렌드를 지우는 로직을 이 함수에 추가하지 말 것.    ║
+// ║  (트렌드 전체/일부 삭제가 필요하면 app/api/admin/* 의 별도 관리자       ║
+// ║   전용 엔드포인트를 사람이 직접 호출해야 한다 — 자동 플로우에서 절대 금지) ║
+// ╚══════════════════════════════════════════════════════════════════╝
 async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
   const t0 = Date.now()
   log('crawl_start', { trigger })
@@ -842,6 +890,26 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
     expandedBody: bodies[i] ?? '',
   }))
 
+  // ── 7.5. 본문 자동 재생성: 1000자 미만이면 한 번 더 시도 (영구 고정) ──
+  // 짧은 본문만 모아 재생성 → 그래도 짧으면 step 8에서 최종 제외
+  const shortIdx = enriched
+    .map((e, i) => ({ e, i }))
+    .filter(({ e }) => e.expandedBody.length < 1000)
+  if (shortIdx.length > 0 && apiKey) {
+    log('body_regen_attempt', { titles: shortIdx.map(({ e }) => e.result.title) })
+    const retryBodies = await expandAllBodies(apiKey, shortIdx.map(({ e }) => ({
+      title: e.result.title,
+      siteName: e.item.site_name,
+      description: e.item.description,
+      summary: e.result.summary,
+    })))
+    shortIdx.forEach(({ i }, j) => {
+      if ((retryBodies[j] ?? '').length > enriched[i].expandedBody.length) {
+        enriched[i] = { ...enriched[i], expandedBody: retryBodies[j] }
+      }
+    })
+  }
+
   // ── 8. 본문 길이 필터: 1000자 미만이면 제외 ────────────────────
   const bodyFilterLog: { title: string; reason?: string; bodyLen: number }[] = []
   const validWithBody = enriched.filter(e => {
@@ -876,6 +944,7 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
   // ── 9. 단일 INSERT (이미지+본문 포함) ────────────────────────
   // → PATCH 불필요, 순서 불일치 버그 없음
   // → related_sources = 뉴스 기사 수집 결과 (이미지 출처 그대로)
+  // 영구 고정: 여기는 INSERT만 한다. 기존 행을 지우는 DELETE를 추가하지 말 것.
   const rows = validWithBody.map(e => {
     const relatedSources: RelatedSource[] = e.articles.length > 0
       ? e.articles.map(a => ({ title: a.site_name, url: a.source_url, site_name: a.site_name }))

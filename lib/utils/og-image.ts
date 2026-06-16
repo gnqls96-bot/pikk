@@ -201,10 +201,11 @@ export async function fetchRelatedGalleryImages(
     if (candidates.length === 0) return []
 
     const fetches = await Promise.all(
-      candidates.slice(0, limit + 2).map(async ({ link, siteName }) => {
+      candidates.slice(0, limit + 4).map(async ({ link, siteName }) => {
         const imgUrl = await fetchOgImage(link)
-        // 영구 고정: 저품질 URL(로고/프로필/아바타 등) 즉시 제외
-        if (!imgUrl || isLowQualityImageUrl(imgUrl)) return null
+        // 영구 고정: URL 패턴(로고/프로필/아바타 등) + 크기(300x200 미만) 즉시 제외
+        // → 실패하면 이 기사는 버려지고 다음 기사 후보가 자동으로 그 자리를 채움
+        if (!imgUrl || !(await isValidTrendImage(imgUrl))) return null
         return { url: imgUrl, source_url: link, site_name: siteName }
       })
     )

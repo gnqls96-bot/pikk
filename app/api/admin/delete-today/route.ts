@@ -12,15 +12,22 @@ export async function DELETE(req: NextRequest) {
   const SKEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   const headers = { apikey: SKEY, Authorization: `Bearer ${SKEY}`, Prefer: 'return=representation' }
 
-  // 오늘 KST 자정 = 전날 15:00 UTC
-  const now = new Date()
-  const kstOffset = 9 * 60 * 60 * 1000
-  const kstNow = new Date(now.getTime() + kstOffset)
-  const kstMidnight = new Date(Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth(), kstNow.getUTCDate()))
-  const cutoff = new Date(kstMidnight.getTime() - kstOffset).toISOString()
+  // ?all=1: 테이블 전체 삭제 (관리자가 직접 호출하는 수동 1회용 — UI 버튼/Cron에서는 절대 사용 금지)
+  const wipeAll = req.nextUrl.searchParams.get('all') === '1'
+  const filter = wipeAll
+    ? 'id=not.is.null'
+    : (() => {
+        // 오늘 KST 자정 = 전날 15:00 UTC
+        const now = new Date()
+        const kstOffset = 9 * 60 * 60 * 1000
+        const kstNow = new Date(now.getTime() + kstOffset)
+        const kstMidnight = new Date(Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth(), kstNow.getUTCDate()))
+        const cutoff = new Date(kstMidnight.getTime() - kstOffset).toISOString()
+        return `published_at=gte.${encodeURIComponent(cutoff)}`
+      })()
 
   const res = await fetch(
-    `${SURL}/rest/v1/trends?published_at=gte.${encodeURIComponent(cutoff)}`,
+    `${SURL}/rest/v1/trends?${filter}`,
     { method: 'DELETE', headers }
   )
 
@@ -30,5 +37,5 @@ export async function DELETE(req: NextRequest) {
   }
 
   const deleted: { id: string }[] = await res.json().catch(() => [])
-  return NextResponse.json({ success: true, deleted: deleted.length, cutoff })
+  return NextResponse.json({ success: true, deleted: deleted.length, wipeAll })
 }
