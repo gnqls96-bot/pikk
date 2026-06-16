@@ -580,6 +580,78 @@ async function generateWithClaude(
   } catch (e) { return { results: [], selected, error: `예외: ${e}` } }
 }
 
+// ── 카테고리 폴백 에디토리얼 (영구 고정) ──────────────────────────
+// 1차 선택의 이미지가 실패한 카테고리를 위해, 같은 카테고리의 다른 후보를
+// 골라 별도로 에디토리얼 메타데이터(제목/요약/태그 등)를 생성한다.
+// "카테고리당 1개"가 깨지지 않도록 1차 선택과 동일한 검증 규칙을 적용.
+async function generateRetryEditorial(
+  items: { source_id: number; item: CrawledItem; category: Category }[],
+  recentTitles: string[]
+): Promise<ClaudeResult[]> {
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey || items.length === 0) return []
+
+  const recentBlock = recentTitles.length > 0
+    ? `이미 발행됨 (선택 금지): ${recentTitles.slice(0, 20).join(' / ')}\n\n` : ''
+  const sections = items.map(({ source_id, item, category }) =>
+    `${source_id}. [카테고리:${category}] [${item.site_name}] ${item.title}`
+  ).join('\n')
+
+  const prompt = `당신은 트렌드 에디터입니다. 아래 ${items.length}개 소스 각각에 대해 카드뉴스용 메타데이터를 작성하세요.
+
+${recentBlock}각 항목에 대해 정확히 하나씩 출력하세요 (총 ${items.length}개).
+- original_title: 해당 source_id 번호의 소스 제목을 번역 없이 그대로 복사
+- heat_score: 40~99, 트렌드마다 반드시 다른 값
+
+형식 (JSON 배열, 마크다운 없음):
+[{"source_id":N,"category":"카테고리명","original_title":"원본제목그대로","title":"한국어20자이내","summary":"요약60자이내","heat_score":40~99,"why_trending":"30자","who_affected":"20자","tags":["태그1","태그2","태그3","태그4","태그5"]}]
+
+${sections}`
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1500,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal: AbortSignal.timeout(25000),
+    })
+    if (!res.ok) return []
+    const data = await res.json()
+    const text: string = data.content?.[0]?.text ?? ''
+    const jsonMatch = text.match(/\[[\s\S]*\]/)
+    if (!jsonMatch) return []
+    const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>[]
+    if (!Array.isArray(parsed)) return []
+
+    const bySourceId = new Map(items.map(it => [it.source_id, it]))
+    const results: ClaudeResult[] = []
+    for (const p of parsed) {
+      const sid = Number(p.source_id)
+      const matched = bySourceId.get(sid)
+      if (!matched) continue
+      const originalTitle = String(p.original_title ?? '').trim() || matched.item.title
+      const rawHeat = Number(p.heat_score)
+      const heatScore = Number.isInteger(rawHeat) && rawHeat >= 40 && rawHeat <= 99 ? rawHeat : matched.item.heat_score
+      results.push({
+        source_id: sid,
+        original_title: originalTitle.slice(0, 300),
+        title: String(p.title ?? '').slice(0, 80),
+        summary: String(p.summary ?? '').slice(0, 200),
+        heat_score: heatScore,
+        why_trending: String(p.why_trending ?? '').slice(0, 500),
+        who_affected: String(p.who_affected ?? '').slice(0, 300),
+        tags: Array.isArray(p.tags) ? (p.tags as unknown[]).map(String).slice(0, 7) : extractTags(matched.item.title),
+        category: matched.category,
+      })
+    }
+    return results
+  } catch { return [] }
+}
+
 // ── Cron ────────────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET
@@ -715,18 +787,57 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
     return true
   }).slice(0, 9)  // 최대 9개 (카테고리 9개 × 1개)
 
+  // ── 6.5. 카테고리 폴백: 1차 선택 이미지가 실패한 카테고리는 같은 카테고리의
+  //         다른 후보로 재시도 (영구 고정 — "하루 9개" 규칙을 지키기 위한 보강) ──
+  // 이미지 품질 기준은 그대로 유지(isValidTrendImage), 카테고리당 1개 제한도 그대로.
+  const filledCats = new Set(valid.map(e => e.result.category))
+  const failedCats = ALL_CATS.filter(c => !filledCats.has(c))
+
+  type FallbackEntry = typeof valid[number]
+  let fallbackEnriched: FallbackEntry[] = []
+
+  if (failedCats.length > 0 && apiKey) {
+    const triedUrls = new Set(claudeResults.map(r => selected[r.source_id - 1]?.source_url))
+    type FallbackWinner = { cat: Category; item: CrawledItem; mainImg: string | null; gallery: GalleryImage[]; articles: GalleryImage[] }
+
+    const winners = (await Promise.all(failedCats.map(async (cat): Promise<FallbackWinner | null> => {
+      const candidates = (catGroups.get(cat) ?? []).filter(c => !triedUrls.has(c.source_url))
+      for (const cand of candidates.slice(0, 3)) {
+        const imgRes = await collectImages(cand.title, cand, cat)
+        if (imgRes.mainImg && await isValidTrendImage(imgRes.mainImg)) {
+          return { cat, item: cand, ...imgRes }
+        }
+      }
+      return null
+    }))).filter((w): w is FallbackWinner => w !== null)
+
+    if (winners.length > 0) {
+      const retryItems = winners.map((w, i) => ({ source_id: i + 1, item: w.item, category: w.cat }))
+      const retryResults = await generateRetryEditorial(retryItems, recentTitles)
+      fallbackEnriched = retryResults
+        .filter(r => !isDuplicateTrend(r.title, r.tags, recentTrends))
+        .map(r => {
+          const w = winners[r.source_id - 1]
+          return { result: r, item: w.item, mainImg: w.mainImg, gallery: w.gallery, articles: w.articles, imageOk: true }
+        })
+      log('category_fallback', { recovered: fallbackEnriched.map(e => e.result.category) })
+    }
+  }
+
+  const finalValid = [...valid, ...fallbackEnriched].slice(0, 9)
+
   // ── 7. 본문 생성 (이미지 수집 완료 후 단일 배치) ─────────────
   // 이미지 수집 완료 후 실행 — 이미지 HTTP와 Haiku 동시실행 시 연결 풀 포화 방지
   const bodies = apiKey
-    ? await expandAllBodies(apiKey, valid.map(e => ({
+    ? await expandAllBodies(apiKey, finalValid.map(e => ({
         title: e.result.title,
-        siteName: selected[e.result.source_id - 1]?.site_name ?? '',
-        description: selected[e.result.source_id - 1]?.description ?? '',
+        siteName: e.item.site_name,
+        description: e.item.description,
         summary: e.result.summary,
       })))
-    : valid.map(() => '')
+    : finalValid.map(() => '')
 
-  const enriched = valid.map((e, i) => ({
+  const enriched = finalValid.map((e, i) => ({
     ...e,
     expandedBody: bodies[i] ?? '',
   }))
@@ -746,7 +857,7 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
 
   log('filter', {
     total: claudeResults.length,
-    passed_image: valid.length,
+    passed_image: finalValid.length,
     passed_body: validWithBody.length,
     elapsed: Date.now() - t0,
     filterLog,
