@@ -599,11 +599,13 @@ async function generateWithClaude(
       headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 4000,
+        // 8000: why_trending(120자+)/who_affected(60자+) 요구 후 9개 항목이 4000 토큰을
+        // 초과해 6번째 항목에서 응답이 잘리는 문제 확인(2026-06-16) → 상향.
+        max_tokens: 8000,
         messages: [{ role: 'user', content: makeCategoryJournalistPrompt(catGroups, selected, recentTitles) }],
       }),
-      // 90s: 소스 수집(~1s)이 빨라 여유 있음. 50s는 2026-06-16 연속 2회 타임아웃 확인 후 상향.
-      signal: AbortSignal.timeout(90000),
+      // 100s: max_tokens 상향에 맞춰 생성 시간 여유도 같이 상향.
+      signal: AbortSignal.timeout(100000),
     })
     if (!res.ok) return { results: [], selected, error: `Claude HTTP ${res.status}: ${await res.text().catch(() => '')}`.slice(0, 200) }
     const data = await res.json()
@@ -698,10 +700,11 @@ ${sections}`
       headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 1500,
+        // 3000: 1500은 why_trending/who_affected 길이 요구 후 항목 2~3개에서 부족할 수 있어 상향.
+        max_tokens: 3000,
         messages: [{ role: 'user', content: prompt }],
       }),
-      signal: AbortSignal.timeout(25000),
+      signal: AbortSignal.timeout(40000),
     })
     if (!res.ok) return []
     const data = await res.json()
