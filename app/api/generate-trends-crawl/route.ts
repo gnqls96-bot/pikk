@@ -110,6 +110,7 @@ const CAT_RSS_SOURCES: Array<{ cat: Category; url: string; name: string }> = [
   { cat: '광고',  url: 'https://www.adweek.com/feed/',                   name: 'Adweek' },
   { cat: '광고',  url: 'https://www.marketingweek.com/feed/',            name: 'Marketing Week' },
   { cat: '광고',  url: 'https://www.campaignlive.com/rss',               name: 'Campaign' },
+  { cat: '광고',  url: 'https://www.marketingdive.com/feeds/news/',      name: 'Marketing Dive' },
   // 영상
   { cat: '영상',  url: 'https://variety.com/feed/',                      name: 'Variety' },
   { cat: '영상',  url: 'https://deadline.com/feed/',                     name: 'Deadline' },
@@ -563,7 +564,8 @@ async function generateWithClaude(
         max_tokens: 4000,
         messages: [{ role: 'user', content: makeCategoryJournalistPrompt(catGroups, selected, recentTitles) }],
       }),
-      signal: AbortSignal.timeout(50000),
+      // 90s: 소스 수집(~1s)이 빨라 여유 있음. 50s는 2026-06-16 연속 2회 타임아웃 확인 후 상향.
+      signal: AbortSignal.timeout(90000),
     })
     if (!res.ok) return { results: [], selected, error: `Claude HTTP ${res.status}: ${await res.text().catch(() => '')}`.slice(0, 200) }
     const data = await res.json()
