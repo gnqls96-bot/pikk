@@ -341,8 +341,6 @@ export async function GET(
   const tags = (trend.tags ?? []).slice(0, 5)
   const hashtagStr = [...tags.map((t: string) => `#${t}`), '#Pikk', '#트렌드'].join(' ')
 
-  const fontDataLen = fonts[0]?.data?.byteLength ?? -1
-  console.log(`[slide-debug] slide=${slideNum} fontByteLength=${fontDataLen} summaryLines=${summaryLines.length}`)
   const opts = { width: SIZE, height: SIZE, fonts }
 
   // ── 슬라이드 1: 표지 ────────────────────────────────────────
