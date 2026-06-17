@@ -24,14 +24,19 @@ const CATEGORY_EMOJI: Record<string, string> = {
 }
 
 // ── Noto Sans KR Bold (로컬 TTF — next/og는 woff2 미지원) ────
-let _fontCache: { name: string; data: ArrayBuffer; weight: 700; style: 'normal' }[] | null = null
+// Satori는 내부 파싱 시 ArrayBuffer를 수정(in-place)할 수 있음.
+// 따라서 원본 바이트는 Uint8Array로 캐싱하고, 렌더마다 새 ArrayBuffer를 생성해야 함.
+let _fontBytes: Uint8Array | null = null
 
 async function getKoreanFonts() {
-  if (_fontCache) return _fontCache
-  const buf = await readFile(join(process.cwd(), 'public/fonts/NotoSansKR-Bold.ttf'))
-  const data = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
-  _fontCache = [{ name: 'NotoSansKR', data, weight: 700 as const, style: 'normal' as const }]
-  return _fontCache
+  if (!_fontBytes) {
+    const buf = await readFile(join(process.cwd(), 'public/fonts/NotoSansKR-Bold.ttf'))
+    _fontBytes = new Uint8Array(buf)
+  }
+  // 렌더마다 fresh copy — Satori가 ArrayBuffer를 수정해도 원본 보존
+  const data = new ArrayBuffer(_fontBytes.byteLength)
+  new Uint8Array(data).set(_fontBytes)
+  return [{ name: 'NotoSansKR', data, weight: 700 as const, style: 'normal' as const }]
 }
 
 // ── Supabase 트렌드 조회 ──────────────────────────────────────
@@ -202,7 +207,7 @@ function SlideKeyPoint({
         <div style={{
           color: 'rgba(255,255,255,0.5)', fontSize: 26, fontWeight: 700,
         }}>
-          {slideNum}/{TOTAL_SLIDES}
+          {`${slideNum}/${TOTAL_SLIDES}`}
         </div>
       </div>
 
@@ -263,7 +268,7 @@ function Slide5CTA({ category, catColor, catEmoji, hashtagStr }: {
           <span>{catEmoji}</span>
           <span>{category}</span>
         </div>
-        <div style={{ color: '#C0C0C0', fontSize: 22 }}>{TOTAL_SLIDES}/{TOTAL_SLIDES}</div>
+        <div style={{ color: '#C0C0C0', fontSize: 22 }}>{`${TOTAL_SLIDES}/${TOTAL_SLIDES}`}</div>
       </div>
 
       {/* 중앙 브랜딩 */}
@@ -276,12 +281,13 @@ function Slide5CTA({ category, catColor, catEmoji, hashtagStr }: {
           <div style={{ width: 72, height: 5, background: BRAND_TEAL, borderRadius: 3 }} />
         </div>
 
-        <div style={{
-          fontSize: 36, color: '#555', fontWeight: 700,
-          textAlign: 'center' as const, lineHeight: 1.5,
-        }}>
-          매일 아침, 9가지 트렌드를
-          {'\n'}가장 먼저 알려드립니다
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+          <div style={{ fontSize: 36, color: '#555', fontWeight: 700, lineHeight: 1.5 }}>
+            매일 아침, 9가지 트렌드를
+          </div>
+          <div style={{ fontSize: 36, color: '#555', fontWeight: 700, lineHeight: 1.5 }}>
+            가장 먼저 알려드립니다
+          </div>
         </div>
 
         {/* CTA 버튼 */}
