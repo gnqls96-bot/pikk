@@ -738,10 +738,7 @@ function validatePublishable(
 // ── Cron ────────────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET
-  const adminPw = process.env.ADMIN_PASSWORD
-  // 테스트용: x-admin-token으로도 cron 모드 호출 허용 (배포 후 제거)
-  const isAdminTest = adminPw && req.headers.get('x-admin-token') === adminPw
-  if (!isAdminTest && secret && req.headers.get('authorization') !== `Bearer ${secret}`) {
+  if (secret && req.headers.get('authorization') !== `Bearer ${secret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   return runCrawl('cron')
