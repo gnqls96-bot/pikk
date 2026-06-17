@@ -318,6 +318,7 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ trendId: string; slide: string }> }
 ) {
+  try {
   const { trendId, slide } = await params
   const slideNum = parseInt(slide, 10)
 
@@ -364,4 +365,9 @@ export async function GET(
     category={trend.category} catColor={catColor}
     catEmoji={catEmoji} hashtagStr={hashtagStr}
   />, opts)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message + '\n' + err.stack : String(err)
+    console.error('[instagram-card] Error:', msg)
+    return new Response(JSON.stringify({ error: msg }), { status: 500, headers: { 'content-type': 'application/json' } })
+  }
 }
