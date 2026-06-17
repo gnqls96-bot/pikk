@@ -210,27 +210,25 @@ function Slide2Summary({
 }
 
 function Slide3Highlight({
-  keyFact, bgData, catColor, category,
-}: { keyFact: string; bgData: string | null; catColor: string; category: string }) {
+  keyFact, bgData, catColor,
+}: { keyFact: string; bgData: string | null; catColor: string }) {
+  // Satori throws on undefined style values — build bg styles conditionally
+  const outerBgStyle = bgData
+    ? { backgroundImage: `url(${bgData})`, backgroundSize: 'cover' as const, backgroundPosition: 'center' as const }
+    : { background: BRAND_DARK }
+  const overlayBg = bgData ? 'rgba(0,0,0,0.62)' : BRAND_DARK
+
   return (
     <div style={{
-      width: SIZE, height: SIZE, display: 'flex',
-      backgroundImage: bgData ? `url(${bgData})` : undefined,
-      background: bgData ? undefined : BRAND_DARK,
-      backgroundSize: 'cover', backgroundPosition: 'center',
-      fontFamily: 'NotoSansKR',
+      width: SIZE, height: SIZE, display: 'flex', flexDirection: 'column',
+      fontFamily: 'NotoSansKR', ...outerBgStyle,
     }}>
       <div style={{
         display: 'flex', flexDirection: 'column', justifyContent: 'center',
-        width: '100%', height: '100%', padding: '80px 72px',
-        background: bgData ? 'rgba(0,0,0,0.62)' : 'transparent',
-        gap: 40,
+        flex: 1, padding: '80px 72px', background: overlayBg, gap: 40,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{
-            width: 6, height: 36, background: BRAND_PEACH,
-            borderRadius: 3, flexShrink: 0,
-          }} />
+          <div style={{ width: 6, height: 36, background: BRAND_PEACH, borderRadius: 3 }} />
           <div style={{ color: BRAND_PEACH, fontSize: 28, fontWeight: 700 }}>
             본문 하이라이트
           </div>
@@ -238,13 +236,10 @@ function Slide3Highlight({
 
         {/* 인용 블록 */}
         <div style={{ display: 'flex', gap: 0 }}>
-          <div style={{
-            width: 6, background: catColor, borderRadius: 3,
-            marginRight: 32, flexShrink: 0, alignSelf: 'stretch',
-          }} />
+          <div style={{ width: 6, background: catColor, borderRadius: 3, marginRight: 32 }} />
           <div style={{
             color: 'white', fontSize: 46, fontWeight: 700,
-            lineHeight: 1.6, wordBreak: 'keep-all',
+            lineHeight: 1.6, wordBreak: 'keep-all', flex: 1,
           }}>
             {keyFact}
           </div>
@@ -361,8 +356,7 @@ export async function GET(
     const galleryImgUrl = trend.gallery_images?.[0]?.url ?? null
     const bgData = galleryImgUrl ? await toDataUrl(galleryImgUrl) : null
     return new ImageResponse(<Slide3Highlight
-      keyFact={keyFact} bgData={bgData}
-      catColor={catColor} category={trend.category}
+      keyFact={keyFact} bgData={bgData} catColor={catColor}
     />, opts)
   }
 
