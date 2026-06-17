@@ -1,6 +1,6 @@
-export type Category = '푸드' | '뷰티' | 'SNS' | '패션' | '테크' | '라이프' | '디자인' | '광고' | '영상'
+export type Category = '푸드' | '뷰티' | 'SNS' | '패션' | '테크' | '라이프' | '디자인' | 'KPOP' | '엔터'
 
-export const CATEGORIES: Category[] = ['푸드', '뷰티', 'SNS', '패션', '테크', '라이프', '디자인', '광고', '영상']
+export const CATEGORIES: Category[] = ['푸드', '뷰티', 'SNS', '패션', '테크', '라이프', '디자인', 'KPOP', '엔터']
 
 export const CATEGORY_COLORS: Record<Category, string> = {
   '푸드': '#FF6B6B',
@@ -10,8 +10,8 @@ export const CATEGORY_COLORS: Record<Category, string> = {
   '테크': '#4A90A4',
   '라이프': '#E8A87C',
   '디자인': '#9B59B6',
-  '광고': '#F39C12',
-  '영상': '#E74C3C',
+  'KPOP': '#FF4081',
+  '엔터': '#E74C3C',
 }
 
 export const CATEGORY_BG: Record<Category, string> = {
@@ -22,13 +22,23 @@ export const CATEGORY_BG: Record<Category, string> = {
   '테크': 'bg-[#4A90A4]',
   '라이프': 'bg-[#E8A87C]',
   '디자인': 'bg-[#9B59B6]',
-  '광고': 'bg-[#F39C12]',
-  '영상': 'bg-[#E74C3C]',
+  'KPOP': 'bg-[#FF4081]',
+  '엔터': 'bg-[#E74C3C]',
 }
 
 export const CATEGORY_EMOJI: Record<Category, string> = {
   '푸드': '🍜', '뷰티': '💄', 'SNS': '📱', '패션': '👗',
-  '테크': '💻', '라이프': '✨', '디자인': '🎨', '광고': '📣', '영상': '🎬',
+  '테크': '💻', '라이프': '✨', '디자인': '🎨', 'KPOP': '🎤', '엔터': '🎭',
+}
+
+// DB 마이그레이션 전 기존 값('광고', '영상') 폴백 — SQL 마이그레이션 완료 후 제거
+const LEGACY_COLORS: Record<string, string> = { '광고': '#FF4081', '영상': '#E74C3C' }
+const LEGACY_EMOJI: Record<string, string> = { '광고': '🎤', '영상': '🎭' }
+export function getCategoryColor(cat: string): string {
+  return (CATEGORY_COLORS as Record<string, string>)[cat] ?? LEGACY_COLORS[cat] ?? '#4A90A4'
+}
+export function getCategoryEmoji(cat: string): string {
+  return (CATEGORY_EMOJI as Record<string, string>)[cat] ?? LEGACY_EMOJI[cat] ?? '✨'
 }
 
 export interface RelatedSource {

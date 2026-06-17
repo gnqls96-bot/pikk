@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation'
 import Header from '@/components/Header'
 import HeroImage from '@/components/HeroImage'
 import GallerySection from '@/components/GallerySection'
-import { CATEGORY_COLORS, CATEGORY_EMOJI } from '@/lib/types'
+import { CATEGORY_COLORS, getCategoryColor, getCategoryEmoji } from '@/lib/types'
 import { getTrends } from '@/lib/data/trends'
 import type { Trend } from '@/lib/types'
 import { proxyUrl } from '@/lib/utils/proxyUrl'
@@ -62,7 +62,7 @@ export default async function TrendDetailPage({
 
   if (!trend) notFound()
 
-  const categoryColor = CATEGORY_COLORS[trend.category]
+  const categoryColor = getCategoryColor(trend.category)
   const related = allTrends
     .filter((t) => t.category === trend.category && t.id !== id)
     .slice(0, 3)
@@ -70,7 +70,7 @@ export default async function TrendDetailPage({
   const gallery = trend.gallery_images ?? []
   const galleryExtra = gallery.slice(1)
   const sources = trend.related_sources ?? []
-  const fallbackEmoji = CATEGORY_EMOJI[trend.category]
+  const fallbackEmoji = getCategoryEmoji(trend.category)
   const heat = trend.heat_score
 
   return (
@@ -86,6 +86,38 @@ export default async function TrendDetailPage({
         >
           ← 피드로 돌아가기
         </Link>
+
+        {/* Summary card */}
+        <div
+          className="rounded-2xl p-5 mb-5"
+          style={{ backgroundColor: '#4A90A4', boxShadow: '0 2px 12px rgba(74,144,164,0.25)' }}
+        >
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-white text-sm font-black">⚡ 핵심 요약</span>
+            <span
+              className="text-xs font-bold px-2 py-0.5 rounded-full"
+              style={{ backgroundColor: 'rgba(255,255,255,0.2)', color: '#fff' }}
+            >
+              {trend.category}
+            </span>
+          </div>
+          <p className="text-sm leading-relaxed text-white font-medium" style={{ opacity: 0.95 }}>
+            {trend.summary}
+          </p>
+          {trend.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-3">
+              {trend.tags.slice(0, 4).map((tag) => (
+                <span
+                  key={tag}
+                  className="text-xs px-2 py-0.5 rounded-full"
+                  style={{ backgroundColor: 'rgba(255,255,255,0.15)', color: 'rgba(255,255,255,0.9)' }}
+                >
+                  #{tag}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* Article card */}
         <article

@@ -43,7 +43,7 @@ interface ClaudeResult {
 
 // ── Category mapping ────────────────────────────────────────────
 const YT_CATEGORY_MAP: Record<string, Category> = {
-  '1': '영상', '10': '영상', '20': '라이프', '22': 'SNS', '23': 'SNS',
+  '1': '엔터', '10': 'KPOP', '20': '라이프', '22': 'SNS', '23': 'SNS',
   '24': 'SNS', '26': '뷰티', '28': '테크',
   '2': '라이프', '15': '라이프', '17': '라이프',
   '19': '라이프', '25': '라이프', '27': '라이프', '29': '라이프',
@@ -54,8 +54,12 @@ const KEYWORD_CATEGORY: [string[], Category][] = [
     'developer', 'programming', 'code', 'model', 'Claude', 'Gemini'], '테크'],
   [['TikTok', 'Instagram', 'Twitter', 'X.com', 'social media', 'viral', 'meme',
     'Reddit', 'Facebook', 'influencer', 'challenge', 'trending'], 'SNS'],
-  [['YouTube', 'video', 'film', 'movie', 'music', 'streaming', 'Netflix', 'Disney',
-    'animation', 'K-pop', 'kpop', '유튜브', '영상', '뮤직', '노래', '드라마'], '영상'],
+  [['K-pop', 'kpop', 'K드라마', '한류', 'hallyu', '아이돌', 'idol', 'BTS', 'Blackpink',
+    'Twice', '케이팝', 'girl group', 'boy band', 'Soompi', 'koreaboo',
+    '뮤직', '노래', '아이유', '뉴진스', 'NewJeans', 'aespa', 'STAYC'], 'KPOP'],
+  [['YouTube', 'video', 'film', 'movie', 'streaming', 'Netflix', 'Disney',
+    'animation', '유튜브', '영상', '드라마', 'celebrity', 'entertainment',
+    'Variety', 'Deadline', 'Hollywood', 'series', 'episode'], '엔터'],
   [['food', 'restaurant', 'recipe', 'eating', 'coffee', 'drink', 'meal', 'cuisine',
     'pizza', 'sushi', 'chocolate', 'chef'], '푸드'],
   [['fashion', 'style', 'clothing', 'outfit', 'brand', 'luxury', 'shoes', 'dress',
@@ -64,26 +68,25 @@ const KEYWORD_CATEGORY: [string[], Category][] = [
     'nutrition', 'diet', 'meditation'], '라이프'],
   [['design', 'graphic', 'UI', 'UX', 'logo', 'typography', 'visual', 'illustration',
     'Figma', 'creative'], '디자인'],
-  [['marketing', 'advertising', 'brand', 'campaign', 'commercial', 'promotion'], '광고'],
   [['beauty', 'makeup', 'skincare', 'cosmetic', 'haircare', 'nail', '뷰티', '화장'], '뷰티'],
 ]
-const VALID_CATS = new Set<string>(['푸드', '뷰티', 'SNS', '패션', '테크', '라이프', '디자인', '광고', '영상'])
+const VALID_CATS = new Set<string>(['푸드', '뷰티', 'SNS', '패션', '테크', '라이프', '디자인', 'KPOP', '엔터'])
 const CATEGORY_KEYWORD: Record<string, string> = {
   '테크': 'technology digital innovation',
   'SNS': 'social media smartphone app',
-  '영상': 'video creative screen',
+  'KPOP': 'kpop korean music idol',
+  '엔터': 'entertainment film streaming',
   '푸드': 'food restaurant meal',
   '패션': 'fashion style clothing',
   '라이프': 'lifestyle wellness',
   '디자인': 'design creative',
-  '광고': 'advertising marketing',
   '뷰티': 'beauty cosmetics skincare',
 }
 
 // ─── 카테고리별 전용 소스 (영구 고정) ──────────────────────────────
 // 규칙: 카테고리 9개 × 각 1개 = 하루 총 9개 고정 발행
 // 같은 카테고리 2개 발행 절대 금지
-const ALL_CATS: Category[] = ['푸드', '뷰티', 'SNS', '패션', '테크', '라이프', '디자인', '광고', '영상']
+const ALL_CATS: Category[] = ['푸드', '뷰티', 'SNS', '패션', '테크', '라이프', '디자인', 'KPOP', '엔터']
 
 const CAT_RSS_SOURCES: Array<{ cat: Category; url: string; name: string }> = [
   // 푸드
@@ -107,15 +110,14 @@ const CAT_RSS_SOURCES: Array<{ cat: Category; url: string; name: string }> = [
   // 디자인
   { cat: '디자인', url: 'https://www.dezeen.com/feed/',                  name: 'Dezeen' },
   { cat: '디자인', url: 'https://design-milk.com/feed/',                 name: 'Design Milk' },
-  // 광고
-  { cat: '광고',  url: 'https://www.adweek.com/feed/',                   name: 'Adweek' },
-  { cat: '광고',  url: 'https://www.marketingweek.com/feed/',            name: 'Marketing Week' },
-  { cat: '광고',  url: 'https://www.campaignlive.com/rss',               name: 'Campaign' },
-  { cat: '광고',  url: 'https://www.marketingdive.com/feeds/news/',      name: 'Marketing Dive' },
-  // 영상
-  { cat: '영상',  url: 'https://variety.com/feed/',                      name: 'Variety' },
-  { cat: '영상',  url: 'https://deadline.com/feed/',                     name: 'Deadline' },
-  { cat: '영상',  url: 'https://www.hollywoodreporter.com/feed/',        name: 'Hollywood Reporter' },
+  // KPOP
+  { cat: 'KPOP',  url: 'https://www.soompi.com/feed/',                  name: 'Soompi' },
+  { cat: 'KPOP',  url: 'https://www.allkpop.com/feed/',                 name: 'Allkpop' },
+  { cat: 'KPOP',  url: 'https://www.koreaboo.com/feed/',                name: 'Koreaboo' },
+  // 엔터
+  { cat: '엔터',  url: 'https://variety.com/feed/',                      name: 'Variety' },
+  { cat: '엔터',  url: 'https://deadline.com/feed/',                     name: 'Deadline' },
+  { cat: '엔터',  url: 'https://www.hollywoodreporter.com/feed/',        name: 'Hollywood Reporter' },
 ]
 const CAT_REDDIT_SOURCES: Array<{ cat: Category; subreddit: string; minScore: number }> = [
   { cat: '푸드',  subreddit: 'food',             minScore: 200 },
@@ -125,12 +127,13 @@ const CAT_REDDIT_SOURCES: Array<{ cat: Category; subreddit: string; minScore: nu
   { cat: '테크',  subreddit: 'technology',        minScore: 500 },
   { cat: '라이프', subreddit: 'selfimprovement',  minScore: 100 },
   { cat: '라이프', subreddit: 'lifestyle',        minScore: 50 },
-  { cat: '영상',  subreddit: 'videos',            minScore: 500 },
+  { cat: 'KPOP',  subreddit: 'kpop',             minScore: 300 },
+  { cat: '엔터',  subreddit: 'entertainment',     minScore: 200 },
   { cat: '패션',  subreddit: 'femalefashionadvice', minScore: 100 },
 ]
 // YouTube 카테고리ID → 픽크 카테고리 매핑
 const YT_CAT_MAP: Record<string, Category> = {
-  '1': '영상', '10': '영상', '23': 'SNS', '24': 'SNS',
+  '1': '엔터', '10': 'KPOP', '23': 'SNS', '24': 'SNS',
   '22': 'SNS', '26': '뷰티', '28': '테크',
   '2': '라이프', '15': '라이프', '17': '라이프', '19': '라이프',
   '20': '라이프', '25': '라이프', '27': '라이프', '29': '라이프',
