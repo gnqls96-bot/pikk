@@ -2,10 +2,6 @@
   "crons": [
     {
       "path": "/api/generate-trends-crawl",
-      "schedule": "49 13 17 6 *"
-    },
-    {
-      "path": "/api/generate-trends-crawl",
       "schedule": "0 21 * * *"
     },
     {
