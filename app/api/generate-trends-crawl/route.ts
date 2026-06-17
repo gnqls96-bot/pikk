@@ -759,15 +759,16 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
   const sbHeaders = { apikey: SKEY, Authorization: `Bearer ${SKEY}` }
   const apiKey = process.env.ANTHROPIC_API_KEY ?? ''
 
-  // ── 1. Cron 중복 실행 방지 ──────────────────────────────────
-  if (trigger === 'cron') {
-    const since = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString()
+  // ── 1. 중복 실행 방지 (cron: 6h / manual: 1h) ───────────────
+  {
+    const windowMs = trigger === 'cron' ? 6 * 60 * 60 * 1000 : 60 * 60 * 1000
+    const since = new Date(Date.now() - windowMs).toISOString()
     const check = await fetch(`${SURL}/rest/v1/trends?published_at=gte.${encodeURIComponent(since)}&select=id&limit=1`, { headers: sbHeaders }).catch(() => null)
     if (check?.ok) {
       const existing = await check.json().catch(() => [])
       if (Array.isArray(existing) && existing.length > 0) {
-        log('crawl_skip', { reason: '6h 내 트렌드 존재' })
-        return NextResponse.json({ skipped: true })
+        log('crawl_skip', { trigger, reason: `${trigger === 'cron' ? '6h' : '1h'} 내 트렌드 존재` })
+        return NextResponse.json({ skipped: true, reason: `${trigger === 'cron' ? '6h' : '1h'} 내 이미 생성됨` })
       }
     }
   }
@@ -944,11 +945,36 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
     return NextResponse.json({ error: '검증 통과한 트렌드 없음', validationLog, failedCats }, { status: 500 })
   }
 
-  // ── 8. INSERT (기존 데이터 절대 건드리지 않음) ────────────────
+  // ── 8. INSERT — 직전 DB 재확인으로 카테고리당 오늘 1개 보장 ─────
+  // (병렬 실행 경쟁 조건 방어: INSERT 직전에 오늘 이미 발행된 카테고리 제외)
+  const todayStart = new Date()
+  todayStart.setUTCHours(0, 0, 0, 0)
+  const todayCatRes = await fetch(
+    `${SURL}/rest/v1/trends?published_at=gte.${encodeURIComponent(todayStart.toISOString())}&select=category`,
+    { headers: sbHeaders }
+  ).catch(() => null)
+  const publishedTodayCats = new Set<string>(
+    todayCatRes?.ok ? (await todayCatRes.json().catch(() => [])).map((r: { category: string }) => r.category) : []
+  )
+  const safeRows = rows.filter(r => {
+    const cat = String(r.category)
+    if (publishedTodayCats.has(cat)) {
+      log('skip_cat_already_today', { cat, title: r.title })
+      return false
+    }
+    publishedTodayCats.add(cat) // 같은 배치 내 중복도 방지
+    return true
+  })
+  log('pre_insert_check', { total: rows.length, safe: safeRows.length, skippedCats: [...publishedTodayCats].filter(c => rows.some(r => String(r.category) === c && !safeRows.includes(r)) ) })
+
+  if (safeRows.length === 0) {
+    return NextResponse.json({ skipped: true, reason: '모든 카테고리 오늘 이미 발행됨', elapsed_ms: Date.now() - t0 })
+  }
+
   const insertRes = await fetch(`${SURL}/rest/v1/trends`, {
     method: 'POST',
     headers: { ...sbHeaders, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
-    body: JSON.stringify(rows),
+    body: JSON.stringify(safeRows),
   })
   if (!insertRes.ok) {
     const errText = await insertRes.text()
@@ -957,15 +983,15 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
   }
 
   const elapsed = Date.now() - t0
-  log('crawl_done', { trigger, elapsed_ms: elapsed, inserted: rows.length, failedCats, validationLog })
+  log('crawl_done', { trigger, elapsed_ms: elapsed, inserted: safeRows.length, failedCats, validationLog })
 
   return NextResponse.json({
     success: true,
-    count: rows.length,
+    count: safeRows.length,
     elapsed_ms: elapsed,
     failedCategories: failedCats,
     validationLog,
-    trends: rows.map((r: Record<string, unknown>) => ({
+    trends: safeRows.map((r: Record<string, unknown>) => ({
       title: r.title,
       category: r.category,
       image_url: r.image_url,
