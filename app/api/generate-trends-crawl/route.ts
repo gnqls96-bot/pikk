@@ -116,12 +116,13 @@ const CAT_RSS_SOURCES: Array<{ cat: Category; url: string; name: string }> = [
   { cat: '라이프', url: 'https://www.self.com/feed/rss',              name: 'Self' },
   { cat: '라이프', url: 'https://www.menshealth.com/rss/all.xml/',    name: 'Men\'s Health' },
   { cat: '라이프', url: 'https://www.mindbodygreen.com/rss',          name: 'MindBodyGreen' },
-  // 디자인 (Dezeen = Cloudflare 차단 가능 — 대체 소스 확보)
-  { cat: '디자인', url: 'https://www.dezeen.com/feed/',               name: 'Dezeen' },
-  { cat: '디자인', url: 'https://design-milk.com/feed/',              name: 'Design Milk' },
-  { cat: '디자인', url: 'https://www.itsnicethat.com/rss',            name: 'It\'s Nice That' },
-  { cat: '디자인', url: 'https://www.fastcompany.com/co-design/rss',  name: 'Co.Design' },
-  { cat: '디자인', url: 'https://www.creativebloq.com/rss',           name: 'Creative Bloq' },
+  // 디자인 (Dezeen/DesignMilk/ItsNiceThat = Cloudflare 차단 확인 → fetch 가능 소스로 교체)
+  { cat: '디자인', url: 'https://www.yankodesign.com/feed/',          name: 'Yanko Design' },
+  { cat: '디자인', url: 'https://www.designboom.com/feed/',           name: 'Design Boom' },
+  { cat: '디자인', url: 'https://www.thisiscolossal.com/feed/',       name: 'Colossal' },
+  { cat: '디자인', url: 'https://www.archdaily.com/feed',             name: 'ArchDaily' },
+  { cat: '디자인', url: 'https://eyeondesign.aiga.org/feed/',         name: 'AIGA Eye on Design' },
+  { cat: '디자인', url: 'https://www.azuremagazine.com/feed/',        name: 'Azure Magazine' },
   // KPOP
   { cat: 'KPOP', url: 'https://www.soompi.com/feed/',                 name: 'Soompi' },
   { cat: 'KPOP', url: 'https://www.allkpop.com/feed/',                name: 'Allkpop' },
