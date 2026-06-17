@@ -945,10 +945,13 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
     return NextResponse.json({ error: '검증 통과한 트렌드 없음', validationLog, failedCats }, { status: 500 })
   }
 
-  // ── 8. INSERT — 직전 DB 재확인으로 카테고리당 오늘 1개 보장 ─────
-  // (병렬 실행 경쟁 조건 방어: INSERT 직전에 오늘 이미 발행된 카테고리 제외)
-  const todayStart = new Date()
-  todayStart.setUTCHours(0, 0, 0, 0)
+  // ── 8. INSERT — 직전 DB 재확인으로 카테고리당 오늘(KST) 1개 보장 ─
+  // 크론은 21:00 UTC = 06:00 KST 기준이므로 UTC 자정이 아닌 KST 자정(=15:00 UTC 전날)으로 체크.
+  // UTC 자정 기준이면 22:25 KST에 수동 생성한 콘텐츠가 다음 날 06:00 KST 크론을 차단함.
+  const KST_OFFSET_MS = 9 * 60 * 60 * 1000
+  const nowKST = Date.now() + KST_OFFSET_MS
+  const kstMidnightMs = nowKST - (nowKST % (24 * 60 * 60 * 1000)) // KST 00:00 in ms
+  const todayStart = new Date(kstMidnightMs - KST_OFFSET_MS) // convert to UTC
   const todayCatRes = await fetch(
     `${SURL}/rest/v1/trends?published_at=gte.${encodeURIComponent(todayStart.toISOString())}&select=category`,
     { headers: sbHeaders }
