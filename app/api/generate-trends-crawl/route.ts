@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import type { Category, GalleryImage, RelatedSource } from '@/lib/types'
 import {
-  fetchRelatedGalleryImages,
-  searchYouTubeThumbnail,
+  fetchOgImage,
+  fetchArticleImages,
+  sameSiteDomain,
   isValidTrendImage,
   isLowQualityImageUrl,
 } from '@/lib/utils/og-image'
@@ -248,7 +249,14 @@ function parseFeedXml(xml: string, siteName: string): Omit<CrawledItem, 'source'
     const link = isAtom ? (c.match(/<link[^>]+href=["']([^"']+)["']/i)?.[1] ?? '') : (c.match(/<link[^>]*>\s*([^\s<][^<]*)\s*<\/link>/i)?.[1]?.trim() ?? '')
     if (!link) continue
     const desc = cleanText((isAtom ? c.match(/<(?:summary|content)[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/(?:summary|content)>/i)?.[1] : c.match(/<description[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/i)?.[1]) ?? '').slice(0, 300)
-    const imgUrl = c.match(/<media:content[^>]+url=["']([^"']+)["'][^>]*medium=["']image["']/i)?.[1] ?? c.match(/<media:thumbnail[^>]+url=["']([^"']+)["']/i)?.[1] ?? null
+    // 영구 고정: RSS 자체의 media:content/media:thumbnail/enclosure 태그 이미지를 우선 추출
+    // (해당 기사 발행처가 직접 명시한 이미지 — 검색/추정 없이 그대로 신뢰)
+    const imgUrl =
+      c.match(/<media:content[^>]+url=["']([^"']+)["'][^>]*medium=["']image["']/i)?.[1] ??
+      c.match(/<media:thumbnail[^>]+url=["']([^"']+)["']/i)?.[1] ??
+      c.match(/<enclosure[^>]+url=["']([^"']+)["'][^>]*type=["']image\/[^"']*["']/i)?.[1] ??
+      c.match(/<enclosure[^>]+type=["']image\/[^"']*["'][^>]*url=["']([^"']+)["']/i)?.[1] ??
+      null
     const pubDate = cleanText(
       c.match(/<pubDate[^>]*>([\s\S]*?)<\/pubDate>/i)?.[1] ??
       c.match(/<updated[^>]*>([\s\S]*?)<\/updated>/i)?.[1] ??
@@ -320,29 +328,24 @@ function isDuplicateTrend(
   })
 }
 
-// ── 이미지 수집 (모든 소스 병렬 실행) ───────────────────────────
-function extractEnglishKeyword(claudeTitle: string, fallback: string): string {
-  const fromClaude = (claudeTitle.match(/[A-Za-z][A-Za-z0-9 ]{1,}/g) ?? []).join(' ').trim()
-  if (fromClaude.length > 2) return fromClaude.slice(0, 50)
-  return fallback.replace(/[가-힣]/g, ' ').split(/\s+/).filter(w => w.length > 2 && /[A-Za-z]/.test(w)).slice(0, 3).join(' ').trim().slice(0, 50)
-}
-
 // ╔══════════════════════════════════════════════════════════════════════╗
-// ║  핵심 원칙 — 이 함수는 절대 변경 금지 (2026-06-16 영구 고정)              ║
+// ║  핵심 원칙 — 이 함수는 절대 변경 금지 (2026-06-16 영구 고정 v2)           ║
 // ║                                                                      ║
-// ║  이미지 수집 방식:                                                     ║
-// ║   1순위: 트렌드 키워드로 뉴스 기사 4~5개 검색 → 각 기사 og:image 직접 추출 ║
-// ║          (해당 트렌드의 키워드만 사용 — 병렬 처리해도 트렌드 간 혼용 금지)   ║
-// ║          기사 이미지가 품질 기준 미달이면 자동으로 다음 기사로 넘어감       ║
-// ║          첫 통과 기사 og:image = 메인, 나머지 통과 기사 = 갤러리(최대 4)   ║
-// ║   2순위: 갤러리가 4개 미달이면 YouTube 썸네일로 남은 슬롯만 보충           ║
-// ║          (뉴스 기사 이미지가 0개면 YouTube 썸네일이 메인 이미지를 대체)    ║
-// ║   3순위: 그래도 이미지가 전혀 없으면 mainImg=null → 해당 트렌드 발행 거부   ║
+// ║  이미지 수집 방식 (해당 트렌드의 소스 기사 자신에서만 수집):                ║
+// ║   1순위: RSS 자체 태그 이미지 (media:content/media:thumbnail/enclosure) ║
+// ║          — 발행처가 직접 명시한 이미지, 검증 후 그대로 신뢰               ║
+// ║   2순위: 위 태그가 없을 때만 og:image 사용. 단 이미지 도메인이 기사        ║
+// ║          도메인과 다르면(sameSiteDomain 실패) 즉시 제외                  ║
+// ║   갤러리: fetchArticleImages로 같은 기사 페이지 본문 <img>만 스캔        ║
+// ║          (다른 기사 검색 절대 금지 — 트렌드 간 이미지 혼입 원천 차단)      ║
+// ║   메인 이미지가 끝까지 없으면 갤러리 첫 이미지를 메인으로 승격            ║
+// ║   그래도 없으면 mainImg=null → 해당 트렌드 발행 거부                    ║
 // ║                                                                      ║
 // ║  절대 금지:                                                            ║
-// ║  ✗ Bing Image Search / 이미지 직접 검색 (뉴스 RSS → og:image 추출만 허용) ║
-// ║  ✗ Pexels (뉴스 og:image + YouTube 모두 실패한 마지막 수단만 — 현재 미사용)║
-// ║  ✗ 다른 트렌드 기사 이미지 혼합 금지                                      ║
+// ║  ✗ Bing News 검색 등 다른 기사에서 이미지 끌어오기 (related-article 검색) ║
+// ║  ✗ YouTube 키워드 검색 썸네일 (해당 소스 영상 자체 썸네일은 허용)          ║
+// ║  ✗ Pexels / Bing Image Search                                        ║
+// ║  ✗ 다른 트렌드 기사 이미지 혼합                                          ║
 // ║  ✗ 로고/프로필/아바타/워터마크 이미지, 300x200 미만 이미지                ║
 // ║  ✗ 이미지 없는 트렌드 발행 금지                                           ║
 // ╚══════════════════════════════════════════════════════════════════════╝
@@ -350,75 +353,51 @@ async function collectImages(
   claudeTitle: string,
   item: CrawledItem,
   category: string = '테크'
-): Promise<{ mainImg: string | null; gallery: GalleryImage[]; articles: GalleryImage[] }> {
-  const engKeyword = extractEnglishKeyword(claudeTitle, item.title)
-
-  // ─────────────────────────────────────────────────────────────────────
-  // 1단계: 트렌드 키워드로 뉴스 기사 검색 (한국어 + 영어 동시)
-  //        Bing News RSS → 기사 URL → 각 기사에서 og:image 직접 추출
-  //        이것이 유일한 이미지 수집 경로 (이미지 검색 X, 스톡 사진 X)
-  // ─────────────────────────────────────────────────────────────────────
-  const [koArticleImages, enArticleImages] = await Promise.all([
-    fetchRelatedGalleryImages(claudeTitle, item.source_url, 5),
-    engKeyword.length > 2
-      ? fetchRelatedGalleryImages(engKeyword, item.source_url, 5)
-      : Promise.resolve<GalleryImage[]>([]),
-  ])
-
-  // 2단계: 한국어 우선 합치기 (중복 URL + 저품질 URL 제외)
-  const seenUrls = new Set<string>()
-  const allImages: GalleryImage[] = []
-  for (const img of [...koArticleImages, ...enArticleImages]) {
-    // 영구 고정: URL 패턴 기반 저품질 이미지 즉시 제외
-    if (isLowQualityImageUrl(img.url)) continue
-    if (!seenUrls.has(img.url) && allImages.length < 5) {
-      seenUrls.add(img.url)
-      allImages.push(img)
+): Promise<{ mainImg: string | null; gallery: GalleryImage[] }> {
+  // 1순위: RSS 자체 태그 이미지 (발행처가 직접 명시 — 도메인 검사 불필요)
+  let mainImg: string | null = null
+  if (item.image_url && !isLowQualityImageUrl(item.image_url) && await isValidTrendImage(item.image_url)) {
+    mainImg = item.image_url
+  } else {
+    // 2순위: RSS 태그가 없을 때만 og:image. 기사 도메인과 다른 이미지는 제외
+    const og = await fetchOgImage(item.source_url)
+    if (og && sameSiteDomain(og, item.source_url) && !isLowQualityImageUrl(og) && await isValidTrendImage(og)) {
+      mainImg = og
     }
   }
 
-  // 3단계: 메인 이미지 = 첫 번째 기사 og:image, 갤러리 = 나머지 최대 4개
-  const mainImg = allImages[0]?.url ?? null
+  // 갤러리: 반드시 같은 기사 페이지에서만 추출 (다른 기사 검색 금지)
+  const articleImages = await fetchArticleImages(item.source_url, 5)
+  const seenUrls = new Set<string>(mainImg ? [mainImg] : [])
+  const gallery: GalleryImage[] = []
+  for (const img of articleImages) {
+    if (isLowQualityImageUrl(img.url) || seenUrls.has(img.url)) continue
+    seenUrls.add(img.url)
+    gallery.push(img)
+    if (gallery.length >= 4) break
+  }
 
-  // ─────────────────────────────────────────────────────────────────
-  // 4단계 폴백 (영구 고정 우선순위):
-  //   1순위: 뉴스 기사 og:image (위에서 수집)
-  //   2순위: YouTube 관련 영상 썸네일 (API 검색)
-  //   3순위: 없으면 mainImg=null → 발행 금지 (isValidTrendImage에서 필터)
-  //   ✗ Pexels 사용 금지
-  // ─────────────────────────────────────────────────────────────────
   if (!mainImg) {
-    // YouTube 소스 직접 썸네일 (API 불필요, YouTube 트렌드 전용)
-    const ytVid = item.source_url.match(/[?&]v=([^&]+)/)?.[1]
-      ?? item.source_url.match(/youtu\.be\/([^?]+)/)?.[1]
-    const ytSourceThumb = ytVid ? `https://img.youtube.com/vi/${ytVid}/maxresdefault.jpg` : null
-
-    // YouTube API 검색 (키워드 검색)
-    const ytSearchThumb = await searchYouTubeThumbnail(claudeTitle)
-
-    const ytThumb = ytSourceThumb ?? ytSearchThumb
-    if (ytThumb && !isLowQualityImageUrl(ytThumb)) {
-      log('youtube_fallback', { title: claudeTitle })
-      const ytImg: GalleryImage = { url: ytThumb, source_url: item.source_url, site_name: 'YouTube' }
-      return { mainImg: ytThumb, gallery: [ytImg], articles: [ytImg] }
-    }
-
-    // 3순위: 이미지 완전 없음 → mainImg null → runCrawl에서 발행 거부
-    log('no_image_all_failed', { title: claudeTitle })
-    return { mainImg: null, gallery: [], articles: [] }
-  }
-
-  // 영구 고정: 뉴스 기사로 갤러리 4개를 못 채우면 메인 이미지는 그대로 두고
-  // YouTube 썸네일로 남은 슬롯만 보충 (메인 이미지를 대체하지 않음)
-  if (allImages.length < 4) {
-    const ytThumb = await searchYouTubeThumbnail(claudeTitle)
-    if (ytThumb && !isLowQualityImageUrl(ytThumb) && !allImages.some(img => img.url === ytThumb)) {
-      log('gallery_youtube_supplement', { title: claudeTitle })
-      allImages.push({ url: ytThumb, source_url: item.source_url, site_name: 'YouTube' })
+    if (gallery.length > 0) {
+      // 같은 기사에서 찾은 이미지를 메인으로 승격
+      mainImg = gallery.shift()!.url
+    } else {
+      // YouTube 트렌드는 영상 자체 썸네일만 허용 (검색 아님 — 동일 소스)
+      const ytVid = item.source_url.match(/[?&]v=([^&]+)/)?.[1]
+        ?? item.source_url.match(/youtu\.be\/([^?]+)/)?.[1]
+      const ytThumb = ytVid ? `https://img.youtube.com/vi/${ytVid}/maxresdefault.jpg` : null
+      if (ytThumb && !isLowQualityImageUrl(ytThumb) && await isValidTrendImage(ytThumb)) {
+        mainImg = ytThumb
+      }
     }
   }
 
-  return { mainImg, gallery: allImages.slice(0, 4), articles: allImages }
+  if (!mainImg) {
+    log('no_image_same_article_only', { title: claudeTitle, source: item.source_url })
+    return { mainImg: null, gallery: [] }
+  }
+
+  return { mainImg, gallery }
 }
 
 // ── Claude 저널리스트 (카테고리별 1개 선택) ──────────────────────
@@ -892,7 +871,7 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
 
   if (failedCats.length > 0 && apiKey) {
     const triedUrls = new Set(claudeResults.map(r => selected[r.source_id - 1]?.source_url))
-    type FallbackWinner = { cat: Category; item: CrawledItem; mainImg: string | null; gallery: GalleryImage[]; articles: GalleryImage[] }
+    type FallbackWinner = { cat: Category; item: CrawledItem; mainImg: string | null; gallery: GalleryImage[] }
 
     const winners = (await Promise.all(failedCats.map(async (cat): Promise<FallbackWinner | null> => {
       const candidates = (catGroups.get(cat) ?? []).filter(c => !triedUrls.has(c.source_url))
@@ -912,7 +891,7 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
         .filter(r => !isDuplicateTrend(r.title, r.tags, recentTrends))
         .map(r => {
           const w = winners[r.source_id - 1]
-          return { result: r, item: w.item, mainImg: w.mainImg, gallery: w.gallery, articles: w.articles, imageOk: true }
+          return { result: r, item: w.item, mainImg: w.mainImg, gallery: w.gallery, imageOk: true }
         })
       log('category_fallback', { recovered: fallbackEnriched.map(e => e.result.category) })
     }
@@ -989,12 +968,10 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
 
   // ── 9. 단일 INSERT (이미지+본문 포함) ────────────────────────
   // → PATCH 불필요, 순서 불일치 버그 없음
-  // → related_sources = 뉴스 기사 수집 결과 (이미지 출처 그대로)
+  // → related_sources = 해당 트렌드의 단일 소스 기사 (이미지도 이 기사에서만 수집했으므로 동일 출처)
   // 영구 고정: 여기는 INSERT만 한다. 기존 행을 지우는 DELETE를 추가하지 말 것.
   const rows = validWithBody.map(e => {
-    const relatedSources: RelatedSource[] = e.articles.length > 0
-      ? e.articles.map(a => ({ title: a.site_name, url: a.source_url, site_name: a.site_name }))
-      : [{ title: e.item.title, url: e.item.source_url, site_name: e.item.site_name }]
+    const relatedSources: RelatedSource[] = [{ title: e.item.title, url: e.item.source_url, site_name: e.item.site_name }]
     return {
       title: e.result.title,
       summary: e.result.summary,
