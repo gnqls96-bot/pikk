@@ -61,15 +61,96 @@ async function fetchTrend(trendId: string): Promise<TrendData | null> {
   } catch { return null }
 }
 
-// ── 이미지 → base64 data URL ──────────────────────────────────
-async function toDataUrl(url: string): Promise<string | null> {
+// ── 표지 이미지 합성: 블러 배경 + 선명 전경 + 가장자리 페더링 ──────
+// Satori가 CSS filter:blur를 미지원하므로 sharp로 서버사이드에서 선처리.
+// 실패 시 원본 이미지 data URL로 폴백.
+async function buildCoverComposite(imageUrl: string): Promise<string | null> {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) })
+    const { default: sharp } = await import('sharp')
+    const CANVAS = 1080
+    const BLUR_SIGMA = 28
+    const FEATHER = 55  // 가장자리 페더링 픽셀 수
+
+    const res = await fetch(imageUrl, { signal: AbortSignal.timeout(8000) })
     if (!res.ok) return null
-    const buf = await res.arrayBuffer()
-    const ct = res.headers.get('content-type') ?? 'image/jpeg'
-    return `data:${ct};base64,${Buffer.from(buf).toString('base64')}`
-  } catch { return null }
+    const inputBuf = Buffer.from(await res.arrayBuffer())
+
+    const meta = await sharp(inputBuf).metadata()
+    const iw = meta.width ?? CANVAS
+    const ih = meta.height ?? CANVAS
+
+    // 1. 블러 배경: cover 리사이즈 후 강한 블러
+    //    경계 아티팩트 방지를 위해 패딩 추가 후 크롭
+    const pad = Math.ceil(BLUR_SIGMA * 2.5)
+    const blurBuf = await sharp(inputBuf)
+      .resize(CANVAS + pad * 2, CANVAS + pad * 2, { fit: 'cover', position: 'centre' })
+      .blur(BLUR_SIGMA)
+      .extract({ left: pad, top: pad, width: CANVAS, height: CANVAS })
+      .jpeg({ quality: 82 })
+      .toBuffer()
+
+    // 2. 선명 전경: contain 비율 유지 리사이즈 (중앙 배치 위한 오프셋 계산)
+    const scale = Math.min(CANVAS / iw, CANVAS / ih)
+    const fw = Math.round(iw * scale)
+    const fh = Math.round(ih * scale)
+    const fx = Math.round((CANVAS - fw) / 2)
+    const fy = Math.round((CANVAS - fh) / 2)
+
+    const fgBuf = await sharp(inputBuf)
+      .resize(fw, fh, { fit: 'fill' })
+      .ensureAlpha()
+      .png()
+      .toBuffer()
+
+    // 3. 페더링 마스크: letterboxing이 있는 방향만 가장자리 투명도 적용
+    //    raw RGBA — 중앙 불투명(255), 가장자리 FEATHER px 걸쳐 0으로 감소
+    const fL = fx > 0 ? FEATHER : 0
+    const fR = fx > 0 ? FEATHER : 0
+    const fT = fy > 0 ? FEATHER : 0
+    const fB = fy > 0 ? FEATHER : 0
+
+    const maskData = new Uint8Array(fw * fh * 4)
+    for (let y = 0; y < fh; y++) {
+      for (let x = 0; x < fw; x++) {
+        const i = (y * fw + x) * 4
+        let a = 255
+        if (fL > 0 && x < fL)        a = Math.min(a, Math.round((x / fL) * 255))
+        if (fR > 0 && x >= fw - fR)   a = Math.min(a, Math.round(((fw - 1 - x) / fR) * 255))
+        if (fT > 0 && y < fT)        a = Math.min(a, Math.round((y / fT) * 255))
+        if (fB > 0 && y >= fh - fB)   a = Math.min(a, Math.round(((fh - 1 - y) / fB) * 255))
+        maskData[i] = maskData[i + 1] = maskData[i + 2] = 255
+        maskData[i + 3] = a
+      }
+    }
+
+    // 4. 마스크 적용 (dest-in: 마스크 alpha → 전경 alpha)
+    const maskedFg = await sharp(fgBuf)
+      .composite([{
+        input: Buffer.from(maskData.buffer),
+        raw: { width: fw, height: fh, channels: 4 },
+        blend: 'dest-in',
+      }])
+      .png()
+      .toBuffer()
+
+    // 5. 블러 배경 + 페더 전경 합성
+    const composed = await sharp(blurBuf)
+      .composite([{ input: maskedFg, left: fx, top: fy, blend: 'over' }])
+      .jpeg({ quality: 90 })
+      .toBuffer()
+
+    return `data:image/jpeg;base64,${composed.toString('base64')}`
+  } catch (err) {
+    console.error('[buildCoverComposite] sharp 실패, 원본 폴백:', err)
+    // 폴백: 원본 이미지 data URL
+    try {
+      const res = await fetch(imageUrl, { signal: AbortSignal.timeout(8000) })
+      if (!res.ok) return null
+      const buf = await res.arrayBuffer()
+      const ct = res.headers.get('content-type') ?? 'image/jpeg'
+      return `data:${ct};base64,${Buffer.from(buf).toString('base64')}`
+    } catch { return null }
+  }
 }
 
 // ── 텍스트 길이 제한 ──────────────────────────────────────────
@@ -132,8 +213,8 @@ function deriveContentPoints(summary: string | null, body: string | null): strin
 // ═══════════════════════════════════════════════════════════════
 
 // ── Slide 1: 표지 ─────────────────────────────────────────────
-// objectFit: 'contain' → 이미지를 잘림 없이 전체 표시
-// 빈 공간은 brand 그라데이션으로 자연스럽게 채움
+// bgData = sharp로 미리 합성한 1080×1080 JPEG data URL
+// (블러 배경 + 선명 전경 + 가장자리 페더링 완료)
 function Slide1Cover({
   title, category, catColor, catEmoji, bgData, teaser,
 }: {
@@ -147,30 +228,36 @@ function Slide1Cover({
       background: `linear-gradient(160deg, ${catColor}BB 0%, ${BRAND_DARK} 100%)`,
       fontFamily: 'NotoSansKR',
     }}>
-      {/* 배경 이미지 — contain으로 전체 표시, 빈 영역은 그라데이션 배경 노출 */}
+      {/* 합성된 배경 이미지 (블러+선명 합성 1080×1080) */}
       {bgData && (
         <img
           src={bgData}
           width={SIZE}
           height={SIZE}
-          style={{
-            position: 'absolute', top: 0, left: 0,
-            objectFit: 'contain',
-            objectPosition: 'center',
-          }}
+          style={{ position: 'absolute', top: 0, left: 0, objectFit: 'fill' }}
         />
       )}
 
-      {/* 상단 그라데이션 오버레이 (브랜드 가독성) */}
+      {/* 비네트: 상단 */}
       <div style={{
-        position: 'absolute', top: 0, left: 0, width: SIZE, height: 260,
-        background: 'linear-gradient(to bottom, rgba(0,0,0,0.65) 0%, rgba(0,0,0,0) 100%)',
+        position: 'absolute', top: 0, left: 0, width: SIZE, height: 220,
+        background: 'linear-gradient(to bottom, rgba(0,0,0,0.50) 0%, rgba(0,0,0,0) 100%)',
+      }} />
+      {/* 비네트: 좌측 */}
+      <div style={{
+        position: 'absolute', top: 0, left: 0, width: 200, height: SIZE,
+        background: 'linear-gradient(to right, rgba(0,0,0,0.30) 0%, rgba(0,0,0,0) 100%)',
+      }} />
+      {/* 비네트: 우측 */}
+      <div style={{
+        position: 'absolute', top: 0, right: 0, width: 200, height: SIZE,
+        background: 'linear-gradient(to left, rgba(0,0,0,0.30) 0%, rgba(0,0,0,0) 100%)',
       }} />
 
-      {/* 하단 그라데이션 오버레이 (텍스트 배경) */}
+      {/* 텍스트 가독성: 하단 강한 그라데이션 */}
       <div style={{
-        position: 'absolute', bottom: 0, left: 0, width: SIZE, height: 580,
-        background: 'linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.7) 40%, rgba(0,0,0,0) 100%)',
+        position: 'absolute', bottom: 0, left: 0, width: SIZE, height: 600,
+        background: 'linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.65) 40%, rgba(0,0,0,0) 100%)',
       }} />
 
       {/* 상단 브랜드 바 */}
@@ -197,7 +284,6 @@ function Slide1Cover({
         display: 'flex', flexDirection: 'column', gap: 20,
         padding: '0 64px 72px',
       }}>
-        {/* 티저 (첫 번째 핵심 포인트 앞부분) */}
         <div style={{
           color: BRAND_PEACH, fontSize: 30, fontWeight: 700,
           display: 'flex', alignItems: 'center', gap: 10,
@@ -205,15 +291,12 @@ function Slide1Cover({
           <span>⚡</span>
           <span>{teaser}</span>
         </div>
-
-        {/* 메인 후킹 제목 */}
         <div style={{
           color: 'white', fontSize: 68, fontWeight: 700,
           lineHeight: 1.25, wordBreak: 'keep-all',
         }}>
           {cap(title, 38)}
         </div>
-
         <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 23, letterSpacing: 1 }}>
           pikk.app · 트렌드를 가장 먼저
         </div>
@@ -396,7 +479,7 @@ export async function GET(
 
   // ── 슬라이드 1: 표지 ────────────────────────────────────────
   if (slideNum === 1) {
-    const bgData = trend.image_url ? await toDataUrl(trend.image_url) : null
+    const bgData = trend.image_url ? await buildCoverComposite(trend.image_url) : null
     const teaser = contentPoints[0] ? cap(contentPoints[0], 28) : `${trend.category} 트렌드`
     return new ImageResponse(<Slide1Cover
       title={trend.title} category={trend.category}
