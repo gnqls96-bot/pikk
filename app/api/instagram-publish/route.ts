@@ -140,24 +140,32 @@ async function generateCaption(trend: TrendRow): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY ?? ''
   if (!apiKey) return defaultCaption(trend)
 
-  const prompt = `당신은 인스타그램 콘텐츠 전문가입니다. 아래 트렌드 정보를 바탕으로 인스타그램 캡션을 작성해주세요.
+  const prompt = `당신은 인스타그램 알고리즘과 콘텐츠 전략을 잘 아는 전문가입니다. 아래 트렌드 정보를 바탕으로 인스타그램 캡션을 작성해주세요.
 
 트렌드 제목: ${trend.title}
 카테고리: ${trend.category}
 요약: ${trend.summary}
 태그: ${(trend.tags ?? []).join(', ')}
 
-다음 형식으로 작성하세요:
+다음 형식으로 정확히 작성하세요:
 1. 첫 줄: 호기심을 자극하는 후킹 문장 (질문형 또는 충격적 사실, 이모지 포함)
 2. 빈 줄
 3. 핵심 내용 2-3줄 (카드뉴스와 중복되지 않게, 더 보고 싶게 만드는 내용)
 4. 빈 줄
-5. CTA: "pikk.app에서 전체 이야기 확인하세요 🔗 링크는 프로필에!"
+5. 저장 유도 문구 1줄: 이 트렌드의 성격과 톤에 맞게 자연스럽게 변형. 아래 패턴을 참고해 매번 다르게 작성 (그대로 복사 금지):
+   - "나중에 다시 보고 싶다면 저장해두세요 📌"
+   - "놓치기 아까운 트렌드라면 저장 먼저 🔖"
+   - "팔로워한테 공유하기 전에 저장해두세요 📌"
+   - "이 흐름 계속 따라가고 싶다면 저장하세요 🔖"
 6. 빈 줄
-7. 해시태그 10-15개 (관련 키워드, 카테고리, 트렌드 태그 포함)
+7. CTA 문구 (고정, 반드시 그대로): "pikk.app에서 전체 이야기 확인하세요 🔗 링크는 프로필에!"
+8. 빈 줄
+9. 댓글 유도 질문 1줄: 이 트렌드의 주제에 맞는 구체적인 질문. 일반적인 "어떻게 생각하세요?" 반복 금지. 독자가 짧게라도 대답하고 싶어지는 질문으로 작성 (이모지 포함).
+10. 빈 줄
+11. 해시태그 10-15개 (관련 키워드, 카테고리, 트렌드 태그 포함)
 
 해시태그는 #픽 #pikk #트렌드 를 반드시 포함하고, 카테고리와 주제 관련 태그를 추가하세요.
-응답은 캡션 텍스트만 출력하세요.`
+응답은 캡션 텍스트만 출력하세요. 번호나 설명 없이 캡션 내용만.`
 
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -165,7 +173,7 @@ async function generateCaption(trend: TrendRow): Promise<string> {
       headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 600,
+        max_tokens: 800,
         messages: [{ role: 'user', content: prompt }],
       }),
       signal: AbortSignal.timeout(20000),
@@ -180,7 +188,19 @@ async function generateCaption(trend: TrendRow): Promise<string> {
 
 function defaultCaption(trend: TrendRow): string {
   const tags = (trend.tags ?? []).map(t => `#${t.replace(/\s+/g, '')}`).join(' ')
-  return `${trend.title}\n\n${trend.summary}\n\npikk.app에서 전체 이야기 확인하세요 🔗 링크는 프로필에!\n\n#픽 #pikk #트렌드 #${trend.category} ${tags}`
+  return [
+    trend.title,
+    '',
+    trend.summary,
+    '',
+    '나중에 다시 보고 싶다면 저장해두세요 📌',
+    '',
+    'pikk.app에서 전체 이야기 확인하세요 🔗 링크는 프로필에!',
+    '',
+    '이 트렌드에 대해 어떻게 생각하시나요? 댓글로 알려주세요 💬',
+    '',
+    `#픽 #pikk #트렌드 #${trend.category} ${tags}`,
+  ].join('\n')
 }
 
 // ── Core publish logic ───────────────────────────────────────────────────────
@@ -251,7 +271,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: '일일 발행 한도(25개) 초과', todayCount }, { status: 429 })
   }
 
-  let body: { trendId?: string } = {}
+  let body: { trendId?: string; preview?: boolean } = {}
   try { body = await req.json() } catch { /* no body */ }
 
   const trends = await fetchTodayTrends()
@@ -266,6 +286,12 @@ export async function POST(req: NextRequest) {
   } else {
     trend = trends.find(t => !t.instagram_post_id)
     if (!trend) return NextResponse.json({ error: '발행되지 않은 트렌드 없음', todayCount }, { status: 200 })
+  }
+
+  // preview mode: generate caption only, no actual publish
+  if (body.preview) {
+    const caption = await generateCaption(trend)
+    return NextResponse.json({ preview: true, trendId: trend.id, title: trend.title, caption })
   }
 
   const result = await publishTrend(trend)
