@@ -745,14 +745,30 @@ function cleanSummaryText(summary: string): string {
 }
 
 // ── Cron ────────────────────────────────────────────────────────
+// AUTO_PUBLISH_ENABLED=1 이 설정되지 않으면 모든 발행이 차단됩니다.
+// 재개 방법: Vercel 환경 변수에 AUTO_PUBLISH_ENABLED=1 추가 후 재배포.
+//           vercel.json crons 배열도 복원 필요 (아래 주석 참고).
+// vercel.json 복원 내용:
+//   "crons": [
+//     { "path": "/api/generate-trends-crawl", "schedule": "0 21 * * *" },
+//     { "path": "/api/generate-trends-crawl", "schedule": "30 22 * * *" }
+//   ]
 export async function GET(req: NextRequest) {
+  if (process.env.AUTO_PUBLISH_ENABLED !== '1') {
+    return NextResponse.json({ paused: true, reason: 'brand conflict — set AUTO_PUBLISH_ENABLED=1 to resume' }, { status: 503 })
+  }
   const secret = process.env.CRON_SECRET
   if (secret && req.headers.get('authorization') !== `Bearer ${secret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   return runCrawl('cron')
 }
-export async function POST() { return runCrawl('manual') }
+export async function POST() {
+  if (process.env.AUTO_PUBLISH_ENABLED !== '1') {
+    return NextResponse.json({ paused: true, reason: 'brand conflict — set AUTO_PUBLISH_ENABLED=1 to resume' }, { status: 503 })
+  }
+  return runCrawl('manual')
+}
 
 // ╔══════════════════════════════════════════════════════════════════╗
 // ║  데이터 보호 원칙 — 영구 고정                                        ║

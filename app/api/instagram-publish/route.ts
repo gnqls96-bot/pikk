@@ -252,7 +252,13 @@ async function publishTrend(trend: TrendRow): Promise<{ success: boolean; postId
 // POST /api/instagram-publish
 // Body: { trendId?: string }  -- publish specific trend or pick first unpublished
 // Query: secret=CRON_SECRET
+// AUTO_PUBLISH_ENABLED=1 이 설정되지 않으면 Instagram 발행이 차단됩니다.
+// 재개 방법: Vercel 환경 변수에 AUTO_PUBLISH_ENABLED=1 추가 후 재배포.
+//           cron-job.org 9개 스케줄도 resume 필요.
 export async function POST(req: NextRequest) {
+  if (process.env.AUTO_PUBLISH_ENABLED !== '1') {
+    return NextResponse.json({ paused: true, reason: 'brand conflict — set AUTO_PUBLISH_ENABLED=1 to resume' }, { status: 503 })
+  }
   const secret = req.nextUrl.searchParams.get('secret')
   if (secret !== process.env.CRON_SECRET && secret !== process.env.ADMIN_PASSWORD) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -315,6 +321,9 @@ export async function POST(req: NextRequest) {
 // External cron service calls this at 6:00, 6:30, 7:00 ... 10:00 KST
 // slot=0 → publish 1st trend, slot=1 → 2nd trend, etc.
 export async function GET(req: NextRequest) {
+  if (process.env.AUTO_PUBLISH_ENABLED !== '1') {
+    return NextResponse.json({ paused: true, reason: 'brand conflict — set AUTO_PUBLISH_ENABLED=1 to resume' }, { status: 503 })
+  }
   const secret = req.nextUrl.searchParams.get('secret')
   if (secret !== process.env.CRON_SECRET && secret !== process.env.ADMIN_PASSWORD) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
