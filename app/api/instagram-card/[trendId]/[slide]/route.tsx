@@ -184,10 +184,10 @@ function coverTitleFontSize(len: number): number {
 
 // ── CTA 제목 동적 폰트 ─────────────────────────────────────────
 function ctaTitleFontSize(len: number): number {
-  if (len <= 15) return 44
-  if (len <= 25) return 38
-  if (len <= 35) return 33
-  if (len <= 50) return 28
+  if (len <= 12) return 42
+  if (len <= 20) return 36
+  if (len <= 30) return 32
+  if (len <= 42) return 28
   return 24
 }
 
@@ -454,17 +454,17 @@ function SlideCTA({
           <div style={{ width: 72, height: 5, background: BRAND_TEAL, borderRadius: 3 }} />
         </div>
 
-        {/* CTA 2줄 고정 포맷 */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+        {/* CTA 2줄 고정 포맷 — width 명시 필수: Satori는 width 미설정 시 오버플로우를 "…"로 잘라냄 */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, width: SIZE - 144 }}>
           <div style={{
             fontSize: ctaFontSz, color: BRAND_DARK, fontWeight: 700,
-            textAlign: 'center' as const, lineHeight: 1.4, wordBreak: 'keep-all',
+            textAlign: 'center' as const, lineHeight: 1.4, wordBreak: 'keep-all', width: '100%',
           }}>
             {`"${titleProtected}"`}
           </div>
           <div style={{
             fontSize: ctaFontSz, color: BRAND_DARK, fontWeight: 700,
-            textAlign: 'center' as const,
+            textAlign: 'center' as const, width: '100%',
           }}>
             전체 이야기가 궁금하다면?
           </div>
@@ -518,8 +518,10 @@ export async function GET(
   const tags = (trend.tags ?? []).slice(0, 5)
   const hashtagStr = [...tags.map((t: string) => `#${t}`), '#Pikk', '#트렌드'].join(' ')
 
-  // 콘텐츠 포인트 동적 결정 (실제 내용만, placeholder 없음)
+  // 콘텐츠 포인트 동적 결정 — 소스 데이터의 trailing "…" 도 제거
   const contentPoints = deriveContentPoints(trend.summary, trend.body)
+    .map(s => s.replace(/[.…]{2,}$|…$/, '').trimEnd())
+    .filter(s => s.length >= 15)
   const totalSlides = 1 + contentPoints.length + 1  // cover + content... + CTA
 
   if (slideNum > totalSlides) {
