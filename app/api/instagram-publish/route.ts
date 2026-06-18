@@ -31,18 +31,28 @@ function sbHeaders() {
 async function fetchTodayTrends(): Promise<TrendRow[]> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   if (!url) return []
-  // KST midnight = UTC 15:00 previous day
-  const now = new Date()
-  const kstMidnight = new Date(now)
-  kstMidnight.setUTCHours(kstMidnight.getUTCHours() - ((kstMidnight.getUTCHours() + 9) % 24 === 0 ? 0 : 0))
-  // Simpler: just fetch last 24h to avoid timezone edge cases
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-  const res = await fetch(
-    `${url}/rest/v1/trends?published_at=gte.${since}&select=id,title,summary,body,category,tags,instagram_post_id,published_at&order=published_at.asc`,
-    { headers: sbHeaders(), signal: AbortSignal.timeout(8000) }
-  )
-  if (!res.ok) { log('fetchTodayTrends error', await res.text()); return [] }
-  return res.json()
+  // Try with instagram_post_id first; fall back without it if column missing
+  for (const cols of [
+    'id,title,summary,body,category,tags,instagram_post_id,published_at',
+    'id,title,summary,body,category,tags,published_at',
+  ]) {
+    const res = await fetch(
+      `${url}/rest/v1/trends?published_at=gte.${since}&select=${cols}&order=published_at.asc`,
+      { headers: sbHeaders(), signal: AbortSignal.timeout(8000) }
+    )
+    if (res.ok) {
+      const rows: TrendRow[] = await res.json()
+      return rows
+    }
+    const errText = await res.text()
+    if (!errText.includes('instagram_post_id')) {
+      log('fetchTodayTrends error', errText)
+      return []
+    }
+    log('instagram_post_id column missing, retrying without it')
+  }
+  return []
 }
 
 async function countTodayInstagramPosts(): Promise<number> {
@@ -53,7 +63,7 @@ async function countTodayInstagramPosts(): Promise<number> {
     `${url}/rest/v1/trends?instagram_post_id=not.is.null&published_at=gte.${since}&select=id`,
     { headers: sbHeaders(), signal: AbortSignal.timeout(8000) }
   )
-  if (!res.ok) return 0
+  if (!res.ok) return 0  // column missing → treat as 0 published
   const rows: unknown[] = await res.json()
   return rows.length
 }
@@ -61,7 +71,7 @@ async function countTodayInstagramPosts(): Promise<number> {
 async function markPublished(trendId: string, postId: string) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   if (!url) return
-  await fetch(
+  const res = await fetch(
     `${url}/rest/v1/trends?id=eq.${trendId}`,
     {
       method: 'PATCH',
@@ -70,6 +80,10 @@ async function markPublished(trendId: string, postId: string) {
       signal: AbortSignal.timeout(8000),
     }
   )
+  if (!res.ok) {
+    const err = await res.text()
+    log('markPublished error (column may be missing)', { trendId, postId, err })
+  }
 }
 
 // ── Instagram Graph API helpers ──────────────────────────────────────────────
