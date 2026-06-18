@@ -5,6 +5,24 @@ export const runtime = 'nodejs'
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
+// Blur is applied only when imageAR < containerAR (image taller than container)
+// AND the "crop fraction" falls in the meaningful improvement zone.
+//
+// cropFraction = imageAR / containerAR  (how much of the image height fits with cover)
+//   < BLUR_LOWER : extreme portrait → contain makes subject tiny → cover is better
+//   [BLUR_LOWER, BLUR_UPPER) : moderate mismatch → blur composite significantly helps
+//   ≥ BLUR_UPPER : near-match → cover cropping is acceptable
+const BLUR_LOWER = 0.45
+const BLUR_UPPER = 0.78
+
+function needsBlur(imageW: number, imageH: number, containerW: number, containerH: number): boolean {
+  const imageAR = imageW / imageH
+  const containerAR = containerW / containerH
+  if (imageAR >= containerAR) return false  // image wider/equal → cover crops sides only, fine
+  const cropFraction = imageAR / containerAR
+  return cropFraction >= BLUR_LOWER && cropFraction < BLUR_UPPER
+}
+
 function isPrivateHost(hostname: string): boolean {
   return (
     hostname === 'localhost' ||
@@ -36,7 +54,7 @@ export async function GET(req: NextRequest) {
     return new NextResponse('Forbidden', { status: 403 })
   }
 
-  const blur = req.nextUrl.searchParams.get('blur') === '1'
+  const blurRequested = req.nextUrl.searchParams.get('blur') === '1'
   const w = parseInt(req.nextUrl.searchParams.get('w') ?? '0', 10) || 0
   const h = parseInt(req.nextUrl.searchParams.get('h') ?? '0', 10) || 0
 
@@ -55,20 +73,27 @@ export async function GET(req: NextRequest) {
 
     const body = Buffer.from(await res.arrayBuffer())
 
-    if (blur && w > 0 && h > 0) {
+    if (blurRequested && w > 0 && h > 0) {
       try {
-        const { buildCoverComposite } = await import('@/lib/utils/buildCoverComposite')
-        const composed = await buildCoverComposite(body, w, h)
-        return new NextResponse(composed.buffer as ArrayBuffer, {
-          headers: {
-            'Content-Type': 'image/jpeg',
-            'Cache-Control': 'public, max-age=604800, s-maxage=604800',
-            'Access-Control-Allow-Origin': '*',
-          },
-        })
+        const { default: sharp } = await import('sharp')
+        const meta = await sharp(body).metadata()
+        const imgW = meta.width ?? w
+        const imgH = meta.height ?? h
+
+        if (needsBlur(imgW, imgH, w, h)) {
+          const { buildCoverComposite } = await import('@/lib/utils/buildCoverComposite')
+          const composed = await buildCoverComposite(body, w, h)
+          return new NextResponse(composed.buffer as ArrayBuffer, {
+            headers: {
+              'Content-Type': 'image/jpeg',
+              'Cache-Control': 'public, max-age=604800, s-maxage=604800',
+              'Access-Control-Allow-Origin': '*',
+            },
+          })
+        }
+        // blur not needed — fall through to pass-through
       } catch (err) {
         console.error('[image-proxy blur] sharp failed, falling through:', err)
-        // fall through to pass-through response
       }
     }
 
