@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 export const runtime = 'nodejs'
 export const maxDuration = 300
 
-const IG_API = 'https://graph.facebook.com/v21.0'
+const IG_API = 'https://graph.instagram.com/v21.0'
 const CARD_BASE = 'https://pikk-chi.vercel.app/api/instagram-card'
 
 function log(msg: string, data?: unknown) {
