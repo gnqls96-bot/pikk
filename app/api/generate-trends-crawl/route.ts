@@ -735,6 +735,15 @@ function validatePublishable(
   return { ok: true }
 }
 
+// ── 카드뉴스용 summary 정제: trailing "…" 제거, 빈 줄 제거 ──────────
+function cleanSummaryText(summary: string): string {
+  return summary
+    .split('\n')
+    .map(line => line.trimEnd().replace(/[.…]{2,}$|…$/, '').trimEnd())
+    .filter(line => line.trim().length > 0)
+    .join('\n')
+}
+
 // ── Cron ────────────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET
@@ -923,7 +932,7 @@ async function runCrawl(trigger: 'cron' | 'manual' = 'manual') {
 
     rows.push({
       title: finalTitle,
-      summary,
+      summary: cleanSummaryText(summary),
       original_title: e.claudeResult?.original_title || e.item.title,
       body,
       why_trending: e.claudeResult?.why_trending || null,

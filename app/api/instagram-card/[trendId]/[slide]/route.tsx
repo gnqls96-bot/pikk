@@ -49,16 +49,20 @@ interface TrendData {
 async function fetchTrend(trendId: string): Promise<TrendData | null> {
   const SURL = process.env.NEXT_PUBLIC_SUPABASE_URL
   const SKEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  if (!SURL || !SKEY) return null
-  try {
-    const res = await fetch(
-      `${SURL}/rest/v1/trends?id=eq.${trendId}&select=title,summary,body,category,image_url,tags`,
-      { headers: { apikey: SKEY, Authorization: `Bearer ${SKEY}` }, signal: AbortSignal.timeout(6000) }
-    )
-    if (!res.ok) return null
-    const rows = await res.json()
-    return rows[0] ?? null
-  } catch { return null }
+  if (SURL && SKEY) {
+    try {
+      const res = await fetch(
+        `${SURL}/rest/v1/trends?id=eq.${trendId}&select=title,summary,body,category,image_url,tags`,
+        { headers: { apikey: SKEY, Authorization: `Bearer ${SKEY}` }, signal: AbortSignal.timeout(6000) }
+      )
+      if (!res.ok) return null
+      const rows = await res.json()
+      return rows[0] ?? null
+    } catch { return null }
+  }
+  // 로컬 개발: Supabase 미설정 시 시드 데이터로 폴백
+  const { seedTrends } = await import('@/lib/data/seed')
+  return (seedTrends.find(t => t.id === trendId) as TrendData | undefined) ?? null
 }
 
 // ── 표지 이미지 합성: 블러 배경 + 선명 전경 + 가장자리 페더링 ──────
@@ -163,6 +167,24 @@ function protectQuotes(text: string): string {
     .replace(/“([^”]+)”/g, (_, i) => `“${i.replace(/ /g, ' ')}”`)
 }
 
+// ── 한국어 타이포그래피: ?·! 뒤 자연스러운 줄바꿈 분리 ──────────────
+// . 은 인용 내부에서도 자주 등장해 분기 불안전 → ?! 만 사용
+function smartBreak(text: string): string[] {
+  const segments: string[] = []
+  let cur = ''
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    cur += ch
+    if ((ch === '?' || ch === '!') && text[i + 1] === ' ') {
+      segments.push(cur.trim())
+      cur = ''
+      i++
+    }
+  }
+  if (cur.trim()) segments.push(cur.trim())
+  return segments.length > 1 ? segments : [text]
+}
+
 // ── 핵심 포인트 슬라이드 동적 폰트: 말줄임 없이 전체 표시 ──────────
 function pointFontSize(len: number): number {
   if (len <= 50)  return 52
@@ -251,6 +273,18 @@ function deriveContentPoints(summary: string | null, body: string | null): strin
   return [(sumLines[0] ?? summary ?? '').slice(0, 200)].filter(Boolean)
 }
 
+// ── 발행 직전 카드 텍스트 품질 로깅 ─────────────────────────────────
+function validateCardContent(title: string, points: string[]): void {
+  if (/…$|\.{2,}$/.test(title.trim())) console.warn('[Card] 제목 말줄임표:', title)
+  for (const p of points) {
+    if (/…$|\.{2,}$/.test(p)) console.warn('[Card] 포인트 말줄임표:', p.slice(-30))
+    const sq = (p.match(/['']/g) ?? []).length
+    const dq = (p.match(/[""]/g) ?? []).length
+    if (sq % 2 !== 0) console.warn('[Card] 홑따옴표 짝 불일치:', p.slice(0, 60))
+    if (dq % 2 !== 0) console.warn('[Card] 겹따옴표 짝 불일치:', p.slice(0, 60))
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 슬라이드 컴포넌트
 // ═══════════════════════════════════════════════════════════════
@@ -264,6 +298,12 @@ function Slide1Cover({
   title: string; category: string; catColor: string
   catEmoji: string; bgData: string | null; teaser: string
 }) {
+  const titleLines = smartBreak(protectQuotes(title))
+  const titleStyle = {
+    color: 'white' as const, fontSize: coverTitleFontSize(title.length),
+    fontWeight: 700, lineHeight: 1.25, wordBreak: 'keep-all' as const,
+  }
+
   return (
     <div style={{
       width: SIZE, height: SIZE, display: 'flex', flexDirection: 'column',
@@ -334,12 +374,12 @@ function Slide1Cover({
           <span>⚡</span>
           <span>{teaser}</span>
         </div>
-        <div style={{
-          color: 'white', fontSize: coverTitleFontSize(title.length), fontWeight: 700,
-          lineHeight: 1.25, wordBreak: 'keep-all',
-        }}>
-          {protectQuotes(title)}
-        </div>
+        {titleLines.length === 1
+          ? <div style={titleStyle}>{titleLines[0]}</div>
+          : <div style={{ display: 'flex' as const, flexDirection: 'column' as const }}>
+              {titleLines.map((line, i) => <div key={i} style={titleStyle}>{line}</div>)}
+            </div>
+        }
         <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 23, letterSpacing: 1 }}>
           pikk.app · 트렌드를 가장 먼저
         </div>
@@ -454,17 +494,19 @@ function SlideCTA({
           <div style={{ width: 72, height: 5, background: BRAND_TEAL, borderRadius: 3 }} />
         </div>
 
-        {/* CTA 2줄 고정 포맷 — width 명시 필수: Satori는 width 미설정 시 오버플로우를 "…"로 잘라냄 */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, width: SIZE - 144 }}>
+        {/* CTA 2줄 고정 포맷
+            Satori에서 textAlign:'center'는 flex item에서 작동 불안정.
+            alignItems:'center' + 자동 너비(auto) 방식으로 시각 중앙 정렬.
+            maxWidth로 너비 제한, wordBreak로 어절 단위 줄바꿈 보장. */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
           <div style={{
             fontSize: ctaFontSz, color: BRAND_DARK, fontWeight: 700,
-            textAlign: 'center' as const, lineHeight: 1.4, wordBreak: 'keep-all', width: '100%',
+            lineHeight: 1.4, wordBreak: 'keep-all', maxWidth: SIZE - 144,
           }}>
             {`"${titleProtected}"`}
           </div>
           <div style={{
-            fontSize: ctaFontSz, color: BRAND_DARK, fontWeight: 700,
-            textAlign: 'center' as const, width: '100%',
+            fontSize: ctaFontSz, color: BRAND_DARK, fontWeight: 700, maxWidth: SIZE - 144,
           }}>
             전체 이야기가 궁금하다면?
           </div>
@@ -522,6 +564,7 @@ export async function GET(
   const contentPoints = deriveContentPoints(trend.summary, trend.body)
     .map(s => s.replace(/[.…]{2,}$|…$/, '').trimEnd())
     .filter(s => s.length >= 15)
+  validateCardContent(trend.title, contentPoints)
   const totalSlides = 1 + contentPoints.length + 1  // cover + content... + CTA
 
   if (slideNum > totalSlides) {
