@@ -153,9 +153,52 @@ async function buildCoverComposite(imageUrl: string): Promise<string | null> {
   }
 }
 
-// ── 텍스트 길이 제한 ──────────────────────────────────────────
-function cap(text: string, max: number): string {
-  return text.length > max ? text.slice(0, max - 1) + '…' : text
+// ── 따옴표 보호: 내부 공백을 NBSP로 치환 → 줄바꿈 시 분리 방지 ─────
+function protectQuotes(text: string): string {
+  return text
+    .replace(/'([^']+)'/g,   (_, i) => `'${i.replace(/ /g, ' ')}'`)
+    .replace(/"([^"]+)"/g,   (_, i) => `"${i.replace(/ /g, ' ')}"`)
+    .replace(/「([^」]+)」/g, (_, i) => `「${i.replace(/ /g, ' ')}」`)
+    .replace(/‘([^’]+)’/g, (_, i) => `‘${i.replace(/ /g, ' ')}’`)
+    .replace(/“([^”]+)”/g, (_, i) => `“${i.replace(/ /g, ' ')}”`)
+}
+
+// ── 핵심 포인트 슬라이드 동적 폰트: 말줄임 없이 전체 표시 ──────────
+function pointFontSize(len: number): number {
+  if (len <= 50)  return 52
+  if (len <= 80)  return 46
+  if (len <= 120) return 40
+  if (len <= 170) return 34
+  if (len <= 230) return 29
+  return 25
+}
+
+// ── 표지 제목 동적 폰트 ────────────────────────────────────────
+function coverTitleFontSize(len: number): number {
+  if (len <= 18) return 68
+  if (len <= 28) return 60
+  if (len <= 40) return 52
+  if (len <= 55) return 44
+  return 38
+}
+
+// ── CTA 제목 동적 폰트 ─────────────────────────────────────────
+function ctaTitleFontSize(len: number): number {
+  if (len <= 15) return 44
+  if (len <= 25) return 38
+  if (len <= 35) return 33
+  if (len <= 50) return 28
+  return 24
+}
+
+// ── 티저 문구: 첫 의미 단위 추출 (말줄임 없음) ─────────────────
+function makeTeaserClause(text: string): string {
+  if (text.length <= 28) return text
+  const sub = text.slice(0, 34)
+  const clauseMatch = sub.match(/^(.{12,})[,，、.。!?]/)
+  if (clauseMatch) return clauseMatch[1]
+  const lastSpace = sub.lastIndexOf(' ')
+  return lastSpace > 8 ? sub.slice(0, lastSpace) : sub.slice(0, 28)
 }
 
 // ── 콘텐츠 포인트 추출 (placeholder 절대 불가) ────────────────
@@ -292,10 +335,10 @@ function Slide1Cover({
           <span>{teaser}</span>
         </div>
         <div style={{
-          color: 'white', fontSize: 68, fontWeight: 700,
+          color: 'white', fontSize: coverTitleFontSize(title.length), fontWeight: 700,
           lineHeight: 1.25, wordBreak: 'keep-all',
         }}>
-          {cap(title, 38)}
+          {protectQuotes(title)}
         </div>
         <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 23, letterSpacing: 1 }}>
           pikk.app · 트렌드를 가장 먼저
@@ -353,12 +396,12 @@ function SlideKeyPoint({
           <div style={{ flex: 1, height: 3, background: `${BRAND_PEACH}55`, borderRadius: 2 }} />
         </div>
 
-        {/* 포인트 텍스트 */}
+        {/* 포인트 텍스트 — 동적 폰트, 말줄임 없음 */}
         <div style={{
-          color: 'white', fontSize: 48, fontWeight: 700,
-          lineHeight: 1.55, wordBreak: 'keep-all',
+          color: 'white', fontSize: pointFontSize(point.length), fontWeight: 700,
+          lineHeight: point.length > 100 ? 1.4 : 1.55, wordBreak: 'keep-all',
         }}>
-          {cap(point, 90)}
+          {protectQuotes(point)}
         </div>
       </div>
 
@@ -372,12 +415,16 @@ function SlideKeyPoint({
 }
 
 // ── Slide CTA ─────────────────────────────────────────────────
+// 고정 2줄 포맷: 1줄 = "[트렌드 제목]", 2줄 = 전체 이야기가 궁금하다면?
 function SlideCTA({
-  category, catColor, catEmoji, hashtagStr, ctaQuestion, totalSlides,
+  category, catColor, catEmoji, hashtagStr, title, totalSlides,
 }: {
   category: string; catColor: string; catEmoji: string
-  hashtagStr: string; ctaQuestion: string; totalSlides: number
+  hashtagStr: string; title: string; totalSlides: number
 }) {
+  const ctaFontSz = ctaTitleFontSize(title.length)
+  const titleProtected = protectQuotes(title)
+
   return (
     <div style={{
       width: SIZE, height: SIZE, display: 'flex', flexDirection: 'column',
@@ -407,12 +454,20 @@ function SlideCTA({
           <div style={{ width: 72, height: 5, background: BRAND_TEAL, borderRadius: 3 }} />
         </div>
 
-        {/* CTA 질문 (이 트렌드와 연결된 질문) */}
-        <div style={{
-          fontSize: 38, color: BRAND_DARK, fontWeight: 700,
-          textAlign: 'center' as const, lineHeight: 1.5, wordBreak: 'keep-all',
-        }}>
-          {ctaQuestion}
+        {/* CTA 2줄 고정 포맷 */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+          <div style={{
+            fontSize: ctaFontSz, color: BRAND_DARK, fontWeight: 700,
+            textAlign: 'center' as const, lineHeight: 1.4, wordBreak: 'keep-all',
+          }}>
+            {`"${titleProtected}"`}
+          </div>
+          <div style={{
+            fontSize: ctaFontSz, color: BRAND_DARK, fontWeight: 700,
+            textAlign: 'center' as const,
+          }}>
+            전체 이야기가 궁금하다면?
+          </div>
         </div>
 
         {/* 버튼 */}
@@ -471,16 +526,12 @@ export async function GET(
     return new Response(`slide ${slideNum} does not exist (total: ${totalSlides})`, { status: 404 })
   }
 
-  // 트렌드 연결형 CTA 질문
-  const shortTitle = cap(trend.title, 22)
-  const ctaQuestion = `"${shortTitle}" 전체 이야기가 궁금하다면?`
-
   const opts = { width: SIZE, height: SIZE, fonts }
 
   // ── 슬라이드 1: 표지 ────────────────────────────────────────
   if (slideNum === 1) {
     const bgData = trend.image_url ? await buildCoverComposite(trend.image_url) : null
-    const teaser = contentPoints[0] ? cap(contentPoints[0], 28) : `${trend.category} 트렌드`
+    const teaser = contentPoints[0] ? makeTeaserClause(contentPoints[0]) : `${trend.category} 트렌드`
     return new ImageResponse(<Slide1Cover
       title={trend.title} category={trend.category}
       catColor={catColor} catEmoji={catEmoji}
@@ -492,7 +543,7 @@ export async function GET(
   if (slideNum === totalSlides) {
     return new ImageResponse(<SlideCTA
       category={trend.category} catColor={catColor} catEmoji={catEmoji}
-      hashtagStr={hashtagStr} ctaQuestion={ctaQuestion} totalSlides={totalSlides}
+      hashtagStr={hashtagStr} title={trend.title} totalSlides={totalSlides}
     />, opts)
   }
 
