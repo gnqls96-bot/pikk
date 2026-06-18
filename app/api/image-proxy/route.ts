@@ -6,21 +6,22 @@ const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
 // Blur is applied only when imageAR < containerAR (image taller than container)
-// AND the "crop fraction" falls in the meaningful improvement zone.
+// AND the crop fraction is below the threshold.
 //
-// cropFraction = imageAR / containerAR  (how much of the image height fits with cover)
-//   < BLUR_LOWER : extreme portrait → contain makes subject tiny → cover is better
-//   [BLUR_LOWER, BLUR_UPPER) : moderate mismatch → blur composite significantly helps
-//   ≥ BLUR_UPPER : near-match → cover cropping is acceptable
-const BLUR_LOWER = 0.45
-const BLUR_UPPER = 0.78
+// cropFraction = imageAR / containerAR  (height coverage with cover; 1.0 = perfect match)
+//   < BLUR_UPPER : meaningful mismatch → blur composite improves the result
+//   ≥ BLUR_UPPER : near-match → cover cropping is acceptable (≤25% height lost)
+//
+// Note: no lower bound — even extreme portrait images (e.g. 2:3) should use blur
+// because cover would cut faces, and blur at least keeps subjects visible.
+const BLUR_UPPER = 0.75
 
 function needsBlur(imageW: number, imageH: number, containerW: number, containerH: number): boolean {
   const imageAR = imageW / imageH
   const containerAR = containerW / containerH
   if (imageAR >= containerAR) return false  // image wider/equal → cover crops sides only, fine
   const cropFraction = imageAR / containerAR
-  return cropFraction >= BLUR_LOWER && cropFraction < BLUR_UPPER
+  return cropFraction < BLUR_UPPER
 }
 
 function isPrivateHost(hostname: string): boolean {
