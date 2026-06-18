@@ -152,7 +152,7 @@ async function generateCaption(trend: TrendRow): Promise<string> {
 2. 빈 줄
 3. 핵심 내용 2-3줄 (카드뉴스와 중복되지 않게, 더 보고 싶게 만드는 내용)
 4. 빈 줄
-5. CTA: "pikk.kr에서 전체 이야기 확인하세요 🔗 링크는 프로필에!"
+5. CTA: "pikk.app에서 전체 이야기 확인하세요 🔗 링크는 프로필에!"
 6. 빈 줄
 7. 해시태그 10-15개 (관련 키워드, 카테고리, 트렌드 태그 포함)
 
@@ -180,7 +180,7 @@ async function generateCaption(trend: TrendRow): Promise<string> {
 
 function defaultCaption(trend: TrendRow): string {
   const tags = (trend.tags ?? []).map(t => `#${t.replace(/\s+/g, '')}`).join(' ')
-  return `${trend.title}\n\n${trend.summary}\n\npikk.kr에서 전체 이야기 확인하세요 🔗 링크는 프로필에!\n\n#픽 #pikk #트렌드 #${trend.category} ${tags}`
+  return `${trend.title}\n\n${trend.summary}\n\npikk.app에서 전체 이야기 확인하세요 🔗 링크는 프로필에!\n\n#픽 #pikk #트렌드 #${trend.category} ${tags}`
 }
 
 // ── Core publish logic ───────────────────────────────────────────────────────
