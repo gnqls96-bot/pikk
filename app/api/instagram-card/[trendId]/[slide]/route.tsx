@@ -506,9 +506,9 @@ function SlideCTA({
             {`"${titleProtected}"`}
           </div>
           <div style={{
-            fontSize: ctaFontSz, color: BRAND_DARK, fontWeight: 700, maxWidth: SIZE - 144,
+            fontSize: ctaFontSz, color: BRAND_TEAL, fontWeight: 700, maxWidth: SIZE - 144,
           }}>
-            전체 이야기가 궁금하다면?
+            조금 더 일찍 트렌드를 알고 싶다면?
           </div>
         </div>
 

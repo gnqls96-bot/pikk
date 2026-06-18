@@ -191,8 +191,14 @@ async function publishTrend(trend: TrendRow): Promise<{ success: boolean; postId
 
   log('publishTrend start', { trendId: trend.id, title: trend.title })
 
-  // 1. Create 5 carousel item containers
-  const totalSlides = 5
+  // 1. Determine actual slide count for this trend (cover + content + CTA = 3–5)
+  let totalSlides = 3
+  for (let n = 5; n >= 4; n--) {
+    const probe = await fetch(`${CARD_BASE}/${trend.id}/${n}`, { method: 'HEAD', signal: AbortSignal.timeout(10000) })
+    if (probe.ok) { totalSlides = n; break }
+  }
+  log('totalSlides', { totalSlides })
+
   const childrenIds: string[] = []
   for (let slide = 1; slide <= totalSlides; slide++) {
     const imageUrl = `${CARD_BASE}/${trend.id}/${slide}`
