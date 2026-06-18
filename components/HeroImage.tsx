@@ -30,7 +30,7 @@ export default function HeroImage({ imageUrl, title, gallery0, fallbackEmoji, ca
     <div className="relative h-52 sm:h-72 w-full overflow-hidden bg-gray-100">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={proxyUrl(imageUrl) ?? imageUrl}
+        src={proxyUrl(imageUrl, { w: 1200, h: 576, blur: true }) ?? imageUrl}
         alt={title}
         className="w-full h-full object-cover"
         onError={() => setError(true)}

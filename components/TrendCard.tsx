@@ -17,7 +17,7 @@ function formatDate(dateStr: string) {
 
 export default function TrendCard({ trend }: { trend: Trend }) {
   const categoryColor = CATEGORY_COLORS[trend.category]
-  const [imgSrc, setImgSrc] = useState<string | null>(proxyUrl(trend.image_url))
+  const [imgSrc, setImgSrc] = useState<string | null>(proxyUrl(trend.image_url, { w: 600, h: 264, blur: true }))
   const [loading, setLoading] = useState(!trend.image_url)
   const [imgError, setImgError] = useState(false)
 
@@ -25,7 +25,7 @@ export default function TrendCard({ trend }: { trend: Trend }) {
     if (trend.image_url) return
     fetch(`/api/pexels?q=${encodeURIComponent(trend.title)}`)
       .then(r => r.json())
-      .then(data => { if (data.url) setImgSrc(proxyUrl(data.url)) })
+      .then(data => { if (data.url) setImgSrc(proxyUrl(data.url, { w: 600, h: 264, blur: true })) })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [trend.id, trend.title, trend.image_url])

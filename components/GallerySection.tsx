@@ -25,7 +25,7 @@ export default function GallerySection({ images }: { images: GalleryImage[] }) {
           <div key={img.url}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={proxyUrl(img.url) ?? img.url}
+              src={proxyUrl(img.url, { w: 400, h: 220, blur: true }) ?? img.url}
               alt=""
               className="w-full rounded-xl object-cover"
               style={{ height: '110px' }}
@@ -48,7 +48,7 @@ export default function GallerySection({ images }: { images: GalleryImage[] }) {
         <div className="mt-2">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={proxyUrl(fifth.url) ?? fifth.url}
+            src={proxyUrl(fifth.url, { w: 800, h: 220, blur: true }) ?? fifth.url}
             alt=""
             className="w-full rounded-xl object-cover"
             style={{ height: '110px' }}

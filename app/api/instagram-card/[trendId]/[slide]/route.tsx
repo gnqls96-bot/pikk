@@ -65,88 +65,19 @@ async function fetchTrend(trendId: string): Promise<TrendData | null> {
   return (seedTrends.find(t => t.id === trendId) as TrendData | undefined) ?? null
 }
 
-// ── 표지 이미지 합성: 블러 배경 + 선명 전경 + 가장자리 페더링 ──────
+// ── 표지 이미지 합성: 블러 배경 + contain 전경 + 가장자리 페더링 ──────
 // Satori가 CSS filter:blur를 미지원하므로 sharp로 서버사이드에서 선처리.
 // 실패 시 원본 이미지 data URL로 폴백.
-async function buildCoverComposite(imageUrl: string): Promise<string | null> {
+async function buildCoverCompositeDataUrl(imageUrl: string): Promise<string | null> {
   try {
-    const { default: sharp } = await import('sharp')
-    const CANVAS = 1080
-    const BLUR_SIGMA = 28
-    const FEATHER = 55  // 가장자리 페더링 픽셀 수
-
     const res = await fetch(imageUrl, { signal: AbortSignal.timeout(8000) })
     if (!res.ok) return null
     const inputBuf = Buffer.from(await res.arrayBuffer())
-
-    const meta = await sharp(inputBuf).metadata()
-    const iw = meta.width ?? CANVAS
-    const ih = meta.height ?? CANVAS
-
-    // 1. 블러 배경: cover 리사이즈 후 강한 블러
-    //    경계 아티팩트 방지를 위해 패딩 추가 후 크롭
-    const pad = Math.ceil(BLUR_SIGMA * 2.5)
-    const blurBuf = await sharp(inputBuf)
-      .resize(CANVAS + pad * 2, CANVAS + pad * 2, { fit: 'cover', position: 'centre' })
-      .blur(BLUR_SIGMA)
-      .extract({ left: pad, top: pad, width: CANVAS, height: CANVAS })
-      .jpeg({ quality: 82 })
-      .toBuffer()
-
-    // 2. 선명 전경: contain 비율 유지 리사이즈 (중앙 배치 위한 오프셋 계산)
-    const scale = Math.min(CANVAS / iw, CANVAS / ih)
-    const fw = Math.round(iw * scale)
-    const fh = Math.round(ih * scale)
-    const fx = Math.round((CANVAS - fw) / 2)
-    const fy = Math.round((CANVAS - fh) / 2)
-
-    const fgBuf = await sharp(inputBuf)
-      .resize(fw, fh, { fit: 'fill' })
-      .ensureAlpha()
-      .png()
-      .toBuffer()
-
-    // 3. 페더링 마스크: letterboxing이 있는 방향만 가장자리 투명도 적용
-    //    raw RGBA — 중앙 불투명(255), 가장자리 FEATHER px 걸쳐 0으로 감소
-    const fL = fx > 0 ? FEATHER : 0
-    const fR = fx > 0 ? FEATHER : 0
-    const fT = fy > 0 ? FEATHER : 0
-    const fB = fy > 0 ? FEATHER : 0
-
-    const maskData = new Uint8Array(fw * fh * 4)
-    for (let y = 0; y < fh; y++) {
-      for (let x = 0; x < fw; x++) {
-        const i = (y * fw + x) * 4
-        let a = 255
-        if (fL > 0 && x < fL)        a = Math.min(a, Math.round((x / fL) * 255))
-        if (fR > 0 && x >= fw - fR)   a = Math.min(a, Math.round(((fw - 1 - x) / fR) * 255))
-        if (fT > 0 && y < fT)        a = Math.min(a, Math.round((y / fT) * 255))
-        if (fB > 0 && y >= fh - fB)   a = Math.min(a, Math.round(((fh - 1 - y) / fB) * 255))
-        maskData[i] = maskData[i + 1] = maskData[i + 2] = 255
-        maskData[i + 3] = a
-      }
-    }
-
-    // 4. 마스크 적용 (dest-in: 마스크 alpha → 전경 alpha)
-    const maskedFg = await sharp(fgBuf)
-      .composite([{
-        input: Buffer.from(maskData.buffer),
-        raw: { width: fw, height: fh, channels: 4 },
-        blend: 'dest-in',
-      }])
-      .png()
-      .toBuffer()
-
-    // 5. 블러 배경 + 페더 전경 합성
-    const composed = await sharp(blurBuf)
-      .composite([{ input: maskedFg, left: fx, top: fy, blend: 'over' }])
-      .jpeg({ quality: 90 })
-      .toBuffer()
-
+    const { buildCoverComposite } = await import('@/lib/utils/buildCoverComposite')
+    const composed = await buildCoverComposite(inputBuf, 1080, 1080, 28, 55)
     return `data:image/jpeg;base64,${composed.toString('base64')}`
   } catch (err) {
     console.error('[buildCoverComposite] sharp 실패, 원본 폴백:', err)
-    // 폴백: 원본 이미지 data URL
     try {
       const res = await fetch(imageUrl, { signal: AbortSignal.timeout(8000) })
       if (!res.ok) return null
@@ -575,7 +506,7 @@ export async function GET(
 
   // ── 슬라이드 1: 표지 ────────────────────────────────────────
   if (slideNum === 1) {
-    const bgData = trend.image_url ? await buildCoverComposite(trend.image_url) : null
+    const bgData = trend.image_url ? await buildCoverCompositeDataUrl(trend.image_url) : null
     const teaser = contentPoints[0] ? makeTeaserClause(contentPoints[0]) : `${trend.category} 트렌드`
     return new ImageResponse(<Slide1Cover
       title={trend.title} category={trend.category}
