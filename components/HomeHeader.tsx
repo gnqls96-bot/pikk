@@ -23,9 +23,10 @@ export default function HomeHeader({ currentCategory }: Props) {
       <div className="max-w-6xl mx-auto px-4">
         {/* Logo row */}
         <div className="h-13 flex items-center justify-between py-3">
-          <Link href="/" className="flex items-center gap-2">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo.png" alt="Fliqk" style={{ height: '26px', width: 'auto' }} />
+          <Link href="/" className="flex items-center gap-1.5">
+            <span className="text-xl font-black tracking-tight" style={{ color: '#1A1A1A' }}>
+              fliqk
+            </span>
             <span
               className="text-xs font-bold px-1.5 py-0.5 rounded-full"
               style={{ backgroundColor: '#E8A87C', color: '#fff' }}
