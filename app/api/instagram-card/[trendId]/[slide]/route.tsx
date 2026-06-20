@@ -248,9 +248,10 @@ function Slide1Cover({
   }
 
   // ── 4:5 그리드 안전 영역 ─────────────────────────────────────
-  // 1080×1350 이미지를 인스타그램 그리드(1:1)로 보면
-  // 상하 각 135px이 잘려 y=135~1215 만 노출됨.
-  // 배지: top=165 (y=165 ✓), 텍스트 블록: bottom=200 → 하단 y=1150 ✓
+  // 1080×1350 이미지: 인스타그램 그리드는 중앙 1080×1080만 노출
+  // → 상하 각 135px(10%) 크롭. 15% 여유로 잡으면 y=202 이상 필요.
+  // 배지: top=260 → 안전 경계(135) +125px / 15% 경계(202) +58px ✓
+  // 텍스트 블록: bottom=230 → 하단 y=1120 / 15% 경계(1148) 28px 여유 ✓
   return (
     <div style={{
       width: SIZE, height: SIZE_H, display: 'flex', flexDirection: 'column',
@@ -289,9 +290,9 @@ function Slide1Cover({
         background: 'linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.70) 40%, rgba(0,0,0,0) 100%)',
       }} />
 
-      {/* 카테고리 배지 + 브랜드 — 안전 영역 상단 (y=165) */}
+      {/* 카테고리 배지 + 브랜드 — 안전 영역 (y=260, 15%+58px 여유) */}
       <div style={{
-        position: 'absolute', top: 165, left: 64, right: 64,
+        position: 'absolute', top: 260, left: 64, right: 64,
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
       }}>
         <div style={{
@@ -307,9 +308,9 @@ function Slide1Cover({
         </div>
       </div>
 
-      {/* 제목 텍스트 블록 — 안전 영역 하단 기준 (bottom=200 → y≤1150) */}
+      {/* 제목 텍스트 블록 — 안전 영역 하단 기준 (bottom=230 → y≤1120, 15%+28px 여유) */}
       <div style={{
-        position: 'absolute', bottom: 200, left: 0, right: 0,
+        position: 'absolute', bottom: 230, left: 0, right: 0,
         display: 'flex', flexDirection: 'column', gap: 20,
         padding: '0 64px',
       }}>
