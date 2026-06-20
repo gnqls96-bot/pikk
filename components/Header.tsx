@@ -7,13 +7,9 @@ export default function Header() {
       style={{ backgroundColor: '#F7F5F0' }}
     >
       <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-1.5">
-          <span
-            className="text-2xl font-black tracking-tight"
-            style={{ color: '#4A90A4' }}
-          >
-            Pikk
-          </span>
+        <Link href="/" className="flex items-center gap-2">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.png" alt="Fliqk" style={{ height: '28px', width: 'auto' }} />
           <span
             className="text-xs font-medium px-1.5 py-0.5 rounded-full"
             style={{ backgroundColor: '#E8A87C', color: '#fff' }}

@@ -90,7 +90,7 @@ export default async function HomePage({
           </div>
           <div className="mt-10 pt-6 border-t border-black/5 text-center">
             <p className="text-xs" style={{ color: '#7F8C8D' }}>
-              © 2025 Pikk. 남들보다 먼저 아는 사람들의 앱.
+              © 2026 Fliqk. 남들보다 먼저 아는 사람들의 앱.
             </p>
           </div>
         </div>

@@ -346,7 +346,7 @@ export default async function TrendDetailPage({
                 이 트렌드를 더 깊게 파고 싶다면?
               </h2>
               <p className="text-xs mt-1 leading-relaxed" style={{ color: 'rgba(255,255,255,0.6)' }}>
-                Pikk 앱에서 AI와 대화하며 트렌드를 깊이 분석해보세요.
+                Fliqk 앱에서 AI와 대화하며 트렌드를 깊이 분석해보세요.
                 &ldquo;이 트렌드가 한국에 언제 오나요?&rdquo;,
                 &ldquo;비슷한 트렌드는 뭐가 있나요?&rdquo; 바로 물어볼 수 있어요.
               </p>

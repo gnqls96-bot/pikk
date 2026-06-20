@@ -149,7 +149,7 @@ export default function AdminPage() {
       <div className="min-h-screen flex items-center justify-center p-6" style={{ backgroundColor: '#F7F5F0' }}>
         <div className="w-full max-w-sm">
           <div className="text-center mb-8">
-            <h1 className="text-4xl font-black" style={{ color: '#2C3E50' }}>Pikk</h1>
+            <h1 className="text-4xl font-black" style={{ color: '#2C3E50' }}>Fliqk</h1>
             <p className="text-sm mt-1.5 font-medium" style={{ color: '#7F8C8D' }}>관리자 페이지</p>
           </div>
           <div className="rounded-2xl p-6" style={{ backgroundColor: '#fff', boxShadow: '0 2px 16px rgba(0,0,0,0.08)' }}>
@@ -185,7 +185,7 @@ export default function AdminPage() {
         {/* 헤더 */}
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-black" style={{ color: '#2C3E50' }}>Pikk Admin</h1>
+            <h1 className="text-2xl font-black" style={{ color: '#2C3E50' }}>Fliqk Admin</h1>
             <p className="text-sm mt-0.5" style={{ color: '#7F8C8D' }}>
               {statsLoading ? '로딩 중...' : `총 트렌드 ${stats?.count ?? 0}개`}
             </p>

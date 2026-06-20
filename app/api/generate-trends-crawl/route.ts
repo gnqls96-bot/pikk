@@ -288,7 +288,7 @@ function parseFeedXml(xml: string, siteName: string): Omit<CrawledItem, 'source'
 
 async function fetchRSSFeed(url: string, siteName: string): Promise<CrawledItem[]> {
   try {
-    const res = await fetch(url, { headers: { 'User-Agent': 'PikkBot/1.0 (+https://pikk.app)' }, signal: AbortSignal.timeout(8000) })
+    const res = await fetch(url, { headers: { 'User-Agent': 'FliqkBot/1.0 (+https://fliqk.app)' }, signal: AbortSignal.timeout(8000) })
     if (!res.ok) return []
     return parseFeedXml(await res.text(), siteName).map(item => ({ ...item, source: 'rss' as const }))
   } catch { return [] }
@@ -296,7 +296,7 @@ async function fetchRSSFeed(url: string, siteName: string): Promise<CrawledItem[
 
 async function fetchRedditHot(subreddit: string, minScore = 300): Promise<CrawledItem[]> {
   try {
-    const res = await fetch(`https://www.reddit.com/r/${subreddit}/hot.json?limit=15`, { headers: { 'User-Agent': 'PikkBot/1.0', Accept: 'application/json' }, signal: AbortSignal.timeout(8000) })
+    const res = await fetch(`https://www.reddit.com/r/${subreddit}/hot.json?limit=15`, { headers: { 'User-Agent': 'FliqkBot/1.0', Accept: 'application/json' }, signal: AbortSignal.timeout(8000) })
     if (!res.ok) return []
     const data = await res.json()
     return (data?.data?.children ?? []).map((c: { data: Record<string, unknown> }) => c.data)

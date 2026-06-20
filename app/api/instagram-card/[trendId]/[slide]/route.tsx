@@ -288,7 +288,7 @@ function Slide1Cover({
           <span>{category}</span>
         </div>
         <div style={{ color: 'rgba(255,255,255,0.8)', fontSize: 26, fontWeight: 700, letterSpacing: 2 }}>
-          PIKK
+          FLIQK
         </div>
       </div>
 
@@ -312,7 +312,7 @@ function Slide1Cover({
             </div>
         }
         <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 23, letterSpacing: 1 }}>
-          pikk.app · 트렌드를 가장 먼저
+          fliqk.app · 트렌드를 가장 먼저
         </div>
       </div>
     </div>
@@ -379,7 +379,7 @@ function SlideKeyPoint({
       {/* 하단 워터마크 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, color: 'rgba(255,255,255,0.3)', fontSize: 22 }}>
         <div style={{ width: 32, height: 2, background: 'rgba(255,255,255,0.2)', borderRadius: 1 }} />
-        <span>PIKK</span>
+        <span>FLIQK</span>
       </div>
     </div>
   )
@@ -417,10 +417,10 @@ function SlideCTA({
 
       {/* 중앙 콘텐츠 */}
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 32 }}>
-        {/* Pikk 로고 */}
+        {/* Fliqk 로고 */}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
           <div style={{ fontSize: 96, fontWeight: 700, color: BRAND_DARK, letterSpacing: -4 }}>
-            Pikk
+            Fliqk
           </div>
           <div style={{ width: 72, height: 5, background: BRAND_TEAL, borderRadius: 3 }} />
         </div>
@@ -451,7 +451,7 @@ function SlideCTA({
             display: 'flex', alignItems: 'center', gap: 10,
           }}>
             <span>👉</span>
-            <span>pikk.app에서 확인하기</span>
+            <span>fliqk.app에서 확인하기</span>
           </div>
           <div style={{ color: '#AAAAAA', fontSize: 22 }}>프로필 링크 클릭</div>
         </div>
@@ -489,7 +489,7 @@ export async function GET(
   const catColor = CATEGORY_COLORS[trend.category] ?? BRAND_TEAL
   const catEmoji = CATEGORY_EMOJI[trend.category] ?? '✨'
   const tags = (trend.tags ?? []).slice(0, 5)
-  const hashtagStr = [...tags.map((t: string) => `#${t}`), '#Pikk', '#트렌드'].join(' ')
+  const hashtagStr = [...tags.map((t: string) => `#${t}`), '#Fliqk', '#트렌드'].join(' ')
 
   // 콘텐츠 포인트 동적 결정 — 소스 데이터의 trailing "…" 도 제거
   const contentPoints = deriveContentPoints(trend.summary, trend.body)
