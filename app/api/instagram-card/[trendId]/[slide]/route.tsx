@@ -7,7 +7,8 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 // ── 디자인 상수 ────────────────────────────────────────────────
-const SIZE = 1080
+const SIZE = 1080     // 너비 (픽셀)
+const SIZE_H = 1350   // 높이 (4:5 비율 — 1350/1080 = 5/4)
 const BRAND_TEAL = '#4A90A4'
 const BRAND_DARK = '#2C3E50'
 const BRAND_WARM = '#F7F5F0'
@@ -74,7 +75,7 @@ async function buildCoverCompositeDataUrl(imageUrl: string): Promise<string | nu
     if (!res.ok) return null
     const inputBuf = Buffer.from(await res.arrayBuffer())
     const { buildCoverComposite } = await import('@/lib/utils/buildCoverComposite')
-    const composed = await buildCoverComposite(inputBuf, 1080, 1080, 28, 55)
+    const composed = await buildCoverComposite(inputBuf, 1080, 1350, 28, 55)
     return `data:image/jpeg;base64,${composed.toString('base64')}`
   } catch (err) {
     console.error('[buildCoverComposite] sharp 실패, 원본 폴백:', err)
@@ -246,48 +247,51 @@ function Slide1Cover({
     fontWeight: 700, lineHeight: 1.25, wordBreak: 'keep-all' as const,
   }
 
+  // ── 4:5 그리드 안전 영역 ─────────────────────────────────────
+  // 1080×1350 이미지를 인스타그램 그리드(1:1)로 보면
+  // 상하 각 135px이 잘려 y=135~1215 만 노출됨.
+  // 배지: top=165 (y=165 ✓), 텍스트 블록: bottom=200 → 하단 y=1150 ✓
   return (
     <div style={{
-      width: SIZE, height: SIZE, display: 'flex', flexDirection: 'column',
+      width: SIZE, height: SIZE_H, display: 'flex', flexDirection: 'column',
       position: 'relative', overflow: 'hidden',
       background: `linear-gradient(160deg, ${catColor}BB 0%, ${BRAND_DARK} 100%)`,
       fontFamily: 'NotoSansKR',
     }}>
-      {/* 합성된 배경 이미지 (블러+선명 합성 1080×1080) */}
+      {/* 합성된 배경 이미지 (블러+선명 합성 1080×1350) */}
       {bgData && (
         <img
           src={bgData}
           width={SIZE}
-          height={SIZE}
+          height={SIZE_H}
           style={{ position: 'absolute', top: 0, left: 0, objectFit: 'fill' }}
         />
       )}
 
-      {/* 비네트: 상단 */}
+      {/* 비네트: 상단 — 4:5 여분 영역 포함 */}
       <div style={{
-        position: 'absolute', top: 0, left: 0, width: SIZE, height: 220,
-        background: 'linear-gradient(to bottom, rgba(0,0,0,0.50) 0%, rgba(0,0,0,0) 100%)',
+        position: 'absolute', top: 0, left: 0, width: SIZE, height: 320,
+        background: 'linear-gradient(to bottom, rgba(0,0,0,0.65) 0%, rgba(0,0,0,0) 100%)',
       }} />
       {/* 비네트: 좌측 */}
       <div style={{
-        position: 'absolute', top: 0, left: 0, width: 200, height: SIZE,
+        position: 'absolute', top: 0, left: 0, width: 200, height: SIZE_H,
         background: 'linear-gradient(to right, rgba(0,0,0,0.30) 0%, rgba(0,0,0,0) 100%)',
       }} />
       {/* 비네트: 우측 */}
       <div style={{
-        position: 'absolute', top: 0, right: 0, width: 200, height: SIZE,
+        position: 'absolute', top: 0, right: 0, width: 200, height: SIZE_H,
         background: 'linear-gradient(to left, rgba(0,0,0,0.30) 0%, rgba(0,0,0,0) 100%)',
       }} />
-
-      {/* 텍스트 가독성: 하단 강한 그라데이션 */}
+      {/* 비네트: 하단 — 텍스트 가독성 + 4:5 여분 영역 */}
       <div style={{
-        position: 'absolute', bottom: 0, left: 0, width: SIZE, height: 600,
-        background: 'linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.65) 40%, rgba(0,0,0,0) 100%)',
+        position: 'absolute', bottom: 0, left: 0, width: SIZE, height: 750,
+        background: 'linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.70) 40%, rgba(0,0,0,0) 100%)',
       }} />
 
-      {/* 상단 브랜드 바 */}
+      {/* 카테고리 배지 + 브랜드 — 안전 영역 상단 (y=165) */}
       <div style={{
-        position: 'absolute', top: 56, left: 64, right: 64,
+        position: 'absolute', top: 165, left: 64, right: 64,
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
       }}>
         <div style={{
@@ -303,11 +307,11 @@ function Slide1Cover({
         </div>
       </div>
 
-      {/* 하단 텍스트 블록 */}
+      {/* 제목 텍스트 블록 — 안전 영역 하단 기준 (bottom=200 → y≤1150) */}
       <div style={{
-        position: 'absolute', bottom: 0, left: 0, right: 0,
+        position: 'absolute', bottom: 200, left: 0, right: 0,
         display: 'flex', flexDirection: 'column', gap: 20,
-        padding: '0 64px 72px',
+        padding: '0 64px',
       }}>
         <div style={{
           color: BRAND_PEACH, fontSize: 30, fontWeight: 700,
@@ -342,9 +346,9 @@ function SlideKeyPoint({
 
   return (
     <div style={{
-      width: SIZE, height: SIZE, display: 'flex', flexDirection: 'column',
+      width: SIZE, height: SIZE_H, display: 'flex', flexDirection: 'column',
       background: `linear-gradient(150deg, #3A7D91 0%, ${BRAND_TEAL} 45%, #1D5F72 100%)`,
-      padding: '64px 72px', fontFamily: 'NotoSansKR',
+      padding: '120px 72px', fontFamily: 'NotoSansKR',
       justifyContent: 'space-between',
     }}>
       {/* 헤더 */}
@@ -409,8 +413,8 @@ function SlideCTA({
 
   return (
     <div style={{
-      width: SIZE, height: SIZE, display: 'flex', flexDirection: 'column',
-      background: BRAND_WARM, padding: '80px 72px',
+      width: SIZE, height: SIZE_H, display: 'flex', flexDirection: 'column',
+      background: BRAND_WARM, padding: '130px 72px',
       fontFamily: 'NotoSansKR', justifyContent: 'space-between',
     }}>
       {/* 상단 배지 */}
@@ -513,7 +517,7 @@ export async function GET(
     return new Response(`slide ${slideNum} does not exist (total: ${totalSlides})`, { status: 404 })
   }
 
-  const opts = { width: SIZE, height: SIZE, fonts }
+  const opts = { width: SIZE, height: SIZE_H, fonts }
 
   // ── 슬라이드 1: 표지 ────────────────────────────────────────
   if (slideNum === 1) {
