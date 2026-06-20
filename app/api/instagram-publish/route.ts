@@ -4,7 +4,7 @@ export const runtime = 'nodejs'
 export const maxDuration = 300
 
 const IG_API = 'https://graph.instagram.com/v21.0'
-const CARD_BASE = 'https://pikk-chi.vercel.app/api/instagram-card'
+const CARD_BASE = 'https://fliqk.vercel.app/api/instagram-card'
 
 function log(msg: string, data?: unknown) {
   console.log(JSON.stringify({ ts: new Date().toISOString(), msg, ...(data != null ? { data } : {}) }))

@@ -88,14 +88,22 @@ async function buildCoverCompositeDataUrl(imageUrl: string): Promise<string | nu
   }
 }
 
-// ── 따옴표 보호: 내부 공백을 NBSP로 치환 → 줄바꿈 시 분리 방지 ─────
+// ── 리터럴 \\n 정규화: DB가 두 글자 \\n을 저장한 경우 실제 개행으로 변환 ─
+function normalizeNewlines(s: string): string {
+  return s.replace(/\\n/g, '\n').trim()
+}
+
+// ── 따옴표 보호: 짧은 인용구(≤ 15자) 내부 공백만 NBSP로 치환 ──────────
+// 긴 인용구는 NBSP 적용 시 Satori에서 줄바꿈 불가 → 우측 overflow 발생
 function protectQuotes(text: string): string {
+  const guard = (inner: string) =>
+    inner.length <= 15 ? inner.replace(/ /g, ' ') : inner
   return text
-    .replace(/'([^']+)'/g,   (_, i) => `'${i.replace(/ /g, ' ')}'`)
-    .replace(/"([^"]+)"/g,   (_, i) => `"${i.replace(/ /g, ' ')}"`)
-    .replace(/「([^」]+)」/g, (_, i) => `「${i.replace(/ /g, ' ')}」`)
-    .replace(/‘([^’]+)’/g, (_, i) => `‘${i.replace(/ /g, ' ')}’`)
-    .replace(/“([^”]+)”/g, (_, i) => `“${i.replace(/ /g, ' ')}”`)
+    .replace(/'([^']+)'/g,   (_, i) => `'${guard(i)}'`)
+    .replace(/"([^"]+)"/g,   (_, i) => `"${guard(i)}"`)
+    .replace(/「([^」]+)」/g, (_, i) => `「${guard(i)}」`)
+    .replace(/‘([^’]+)’/g, (_, i) => `‘${guard(i)}’`)
+    .replace(/“([^”]+)”/g, (_, i) => `“${guard(i)}”`)
 }
 
 // ── 한국어 타이포그래피: ?·! 뒤 자연스러운 줄바꿈 분리 ──────────────
@@ -157,8 +165,11 @@ function makeTeaserClause(text: string): string {
 // ── 콘텐츠 포인트 추출 (placeholder 절대 불가) ────────────────
 // 우선순위: ① 개행 구분 summary ② body 단락 ③ 문장 분리
 function deriveContentPoints(summary: string | null, body: string | null): string[] {
+  // 리터럴 \n(두 글자) → 실제 개행 변환
+  const normSummary = summary ? normalizeNewlines(summary) : null
+  const normBody = body ? normalizeNewlines(body) : null
   // ① summary를 \n으로 분리해서 2개 이상이면 바로 사용
-  const sumLines = (summary ?? '')
+  const sumLines = (normSummary ?? '')
     .split('\n')
     .map(s => s.trim().replace(/^[\-\*•·]\s*/, ''))
     .filter(s => s.length >= 15)
@@ -166,7 +177,7 @@ function deriveContentPoints(summary: string | null, body: string | null): strin
   if (sumLines.length >= 2) return sumLines.slice(0, 3)
 
   // ② body를 단락(\n 기준)으로 분리해서 내용 보충
-  const bodyParas = (body ?? '')
+  const bodyParas = (normBody ?? '')
     .split('\n')
     .map(s => s.trim())
     .filter(s => s.length >= 30 && s.length <= 250)
@@ -175,7 +186,7 @@ function deriveContentPoints(summary: string | null, body: string | null): strin
   if (combined.length >= 2) return combined.slice(0, 3)
 
   // ③ 문장 단위로 자르기 (한/영 공통)
-  const fullText = [(summary ?? ''), (body ?? '')].filter(Boolean).join(' ')
+  const fullText = [(normSummary ?? ''), (normBody ?? '')].filter(Boolean).join(' ')
   const sents = fullText
     .replace(/\n+/g, ' ')
     .split(/(?<=[.!?。])\s+/)
@@ -201,7 +212,7 @@ function deriveContentPoints(summary: string | null, body: string | null): strin
   }
 
   // ④ 최후 수단: summary or title fragment
-  return [(sumLines[0] ?? summary ?? '').slice(0, 200)].filter(Boolean)
+  return [(sumLines[0] ?? normSummary ?? '').slice(0, 200)].filter(Boolean)
 }
 
 // ── 발행 직전 카드 텍스트 품질 로깅 ─────────────────────────────────
