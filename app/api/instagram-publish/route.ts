@@ -334,32 +334,42 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'slot must be 0-8' }, { status: 400 })
   }
 
+  log('GET /instagram-publish called', { slot, host: req.headers.get('host') })
+
   const accountId = process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? ''
   const token = process.env.INSTAGRAM_ACCESS_TOKEN ?? ''
   if (!accountId || !token) {
+    log('missing credentials', { hasAccountId: !!accountId, hasToken: !!token })
     return NextResponse.json({ error: 'Instagram credentials not configured' }, { status: 500 })
   }
 
   const todayCount = await countTodayInstagramPosts()
+  log('todayCount', { todayCount, slot })
   if (todayCount >= 25) {
     return NextResponse.json({ error: '일일 발행 한도(25개) 초과', todayCount }, { status: 429 })
   }
 
   const trends = await fetchTodayTrends()
+  log('trends fetched', { count: trends.length, slot })
   if (slot >= trends.length) {
+    log('slot out of range', { slot, trendCount: trends.length })
     return NextResponse.json({ skipped: true, reason: `slot ${slot} >= ${trends.length} trends today` })
   }
 
   const trend = trends[slot]
   if (trend.instagram_post_id) {
+    log('already published, skipping', { slot, trendId: trend.id, postId: trend.instagram_post_id })
     return NextResponse.json({ skipped: true, reason: '이미 발행됨', postId: trend.instagram_post_id })
   }
 
+  log('starting publish', { slot, trendId: trend.id, title: trend.title })
   const result = await publishTrend(trend)
   if (!result.success) {
+    log('publish failed', { slot, trendId: trend.id, error: result.error })
     return NextResponse.json({ error: result.error }, { status: 500 })
   }
 
+  log('publish success', { slot, trendId: trend.id, postId: result.postId, todayCount: todayCount + 1 })
   return NextResponse.json({
     success: true,
     slot,
