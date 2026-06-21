@@ -87,7 +87,10 @@ async function markPublished(trendId: string, postId: string) {
 }
 
 // ── Instagram Graph API helpers ──────────────────────────────────────────────
-async function igPost(path: string, body: Record<string, string>): Promise<{ id?: string; error?: { message: string } }> {
+interface IgError { message: string; code?: number; type?: string; error_subcode?: number; error_user_msg?: string; fbtrace_id?: string }
+interface IgResult { id?: string; error?: IgError }
+
+async function igPost(path: string, body: Record<string, string>): Promise<IgResult> {
   const token = process.env.INSTAGRAM_ACCESS_TOKEN ?? ''
   const res = await fetch(`${IG_API}${path}`, {
     method: 'POST',
@@ -95,7 +98,34 @@ async function igPost(path: string, body: Record<string, string>): Promise<{ id?
     body: JSON.stringify({ ...body, access_token: token }),
     signal: AbortSignal.timeout(30000),
   })
-  return res.json()
+  const json: IgResult = await res.json()
+  if (!res.ok && !json.error) {
+    json.error = { message: `HTTP ${res.status}`, code: res.status }
+  }
+  return json
+}
+
+// Poll container until FINISHED (or ERROR/EXPIRED). Returns true when ready.
+async function waitForFinished(containerId: string, label: string, timeoutMs = 90000): Promise<boolean> {
+  const token = process.env.INSTAGRAM_ACCESS_TOKEN ?? ''
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 4000))
+    const res = await fetch(
+      `${IG_API}/${containerId}?fields=status_code&access_token=${token}`,
+      { signal: AbortSignal.timeout(10000) }
+    )
+    const data: { status_code?: string; error?: IgError } = await res.json()
+    log(`${label} status`, { containerId, status_code: data.status_code })
+    if (data.status_code === 'FINISHED') return true
+    if (data.status_code === 'ERROR' || data.status_code === 'EXPIRED') {
+      log(`${label} failed state`, { containerId, status_code: data.status_code })
+      return false
+    }
+    // IN_PROGRESS → keep polling
+  }
+  log(`${label} timeout`, { containerId })
+  return false
 }
 
 async function createCarouselItem(accountId: string, imageUrl: string): Promise<string | null> {
@@ -105,7 +135,7 @@ async function createCarouselItem(accountId: string, imageUrl: string): Promise<
       is_carousel_item: 'true',
     })
     if (data.id) return data.id
-    log('createCarouselItem failed', { attempt, imageUrl, error: data.error?.message })
+    log('createCarouselItem failed', { attempt, imageUrl, igError: data.error })
     await new Promise(r => setTimeout(r, 2000 * (attempt + 1)))
   }
   return null
@@ -119,20 +149,25 @@ async function createCarousel(accountId: string, childrenIds: string[], caption:
       caption,
     })
     if (data.id) return data.id
-    log('createCarousel failed', { attempt, error: data.error?.message })
+    log('createCarousel failed', { attempt, igError: data.error })
     await new Promise(r => setTimeout(r, 2000 * (attempt + 1)))
   }
   return null
 }
 
-async function publishMedia(accountId: string, creationId: string): Promise<string | null> {
+async function publishMedia(
+  accountId: string,
+  creationId: string,
+): Promise<{ id: string | null; igError?: IgError }> {
+  let lastIgError: IgError | undefined
   for (let attempt = 0; attempt < 3; attempt++) {
     const data = await igPost(`/${accountId}/media_publish`, { creation_id: creationId })
-    if (data.id) return data.id
-    log('publishMedia failed', { attempt, error: data.error?.message })
+    if (data.id) return { id: data.id }
+    lastIgError = data.error
+    log('publishMedia failed', { attempt, igError: data.error })
     await new Promise(r => setTimeout(r, 3000 * (attempt + 1)))
   }
-  return null
+  return { id: null, igError: lastIgError }
 }
 
 // ── Caption generation ───────────────────────────────────────────────────────
@@ -228,7 +263,13 @@ async function publishTrend(trend: TrendRow): Promise<{ success: boolean; postId
     childrenIds.push(id)
   }
 
-  // 2. Generate caption
+  // 1b. Wait for each carousel item to reach FINISHED state before proceeding
+  for (let i = 0; i < childrenIds.length; i++) {
+    const ready = await waitForFinished(childrenIds[i], `slide${i + 1}`)
+    if (!ready) return { success: false, error: `슬라이드 ${i + 1} 컨테이너 FINISHED 대기 실패` }
+  }
+
+  // 2. Generate caption (runs concurrently with FINISHED polling already done above)
   const caption = await generateCaption(trend)
   log('caption generated', { length: caption.length })
 
@@ -236,9 +277,18 @@ async function publishTrend(trend: TrendRow): Promise<{ success: boolean; postId
   const carouselId = await createCarousel(accountId, childrenIds, caption)
   if (!carouselId) return { success: false, error: '캐러셀 컨테이너 생성 실패', caption }
 
+  // 3b. Wait for carousel container to reach FINISHED state
+  const carouselReady = await waitForFinished(carouselId, 'carousel')
+  if (!carouselReady) return { success: false, error: '캐러셀 컨테이너 FINISHED 대기 실패', caption }
+
   // 4. Publish
-  const postId = await publishMedia(accountId, carouselId)
-  if (!postId) return { success: false, error: '미디어 발행 실패', caption }
+  const { id: postId, igError } = await publishMedia(accountId, carouselId)
+  if (!postId) {
+    const igMsg = igError
+      ? `[ig code=${igError.code ?? '?'} sub=${igError.error_subcode ?? '-'}] ${igError.message}${igError.error_user_msg ? ` / ${igError.error_user_msg}` : ''}`
+      : '알 수 없음'
+    return { success: false, error: `미디어 발행 실패: ${igMsg}`, caption }
+  }
 
   // 5. Record in Supabase
   await markPublished(trend.id, postId)
