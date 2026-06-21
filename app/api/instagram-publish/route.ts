@@ -367,7 +367,7 @@ export async function POST(req: NextRequest) {
 }
 
 // GET /api/instagram-publish
-// Query: secret=CRON_SECRET&slot=0-8
+// Query: secret=CRON_SECRET&slot=0-8  (or check=true to test API health)
 // External cron service calls this at 6:00, 6:30, 7:00 ... 10:00 KST
 // slot=0 → publish 1st trend, slot=1 → 2nd trend, etc.
 export async function GET(req: NextRequest) {
@@ -377,6 +377,52 @@ export async function GET(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get('secret')
   if (secret !== process.env.CRON_SECRET && secret !== process.env.ADMIN_PASSWORD) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  // ?check=true — Instagram API health check (GET account), no publishing
+  if (req.nextUrl.searchParams.get('check') === 'true') {
+    const token = process.env.INSTAGRAM_ACCESS_TOKEN ?? ''
+    const accountId = process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? ''
+    const res = await fetch(
+      `${IG_API}/${accountId}?fields=id,username,followers_count,media_count&access_token=${token}`,
+      { signal: AbortSignal.timeout(10000) }
+    )
+    const data = await res.json()
+    log('API health check', { ok: res.ok, status: res.status, data })
+    return NextResponse.json({ ok: res.ok, status: res.status, accountInfo: data })
+  }
+
+  // ?single=true — Test single image publish (no carousel) to isolate whether issue is carousel-specific
+  if (req.nextUrl.searchParams.get('single') === 'true') {
+    const accountId = process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? ''
+    const token = process.env.INSTAGRAM_ACCESS_TOKEN ?? ''
+    // Use a plain public test image from picsum.photos (not our card system)
+    const testImageUrl = 'https://picsum.photos/1080/1350'
+    // Create single-image container
+    const createRes = await fetch(`${IG_API}/${accountId}/media`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_url: testImageUrl, caption: 'API test', access_token: token }),
+      signal: AbortSignal.timeout(15000),
+    })
+    const createData: IgResult = await createRes.json()
+    if (!createData.id) {
+      return NextResponse.json({ step: 'create', error: createData.error })
+    }
+    // Wait for FINISHED
+    const ready = await waitForFinished(createData.id, 'single-test')
+    if (!ready) {
+      return NextResponse.json({ step: 'wait', containerId: createData.id, error: 'FINISHED 대기 실패' })
+    }
+    // Publish
+    const pubRes = await fetch(`${IG_API}/${accountId}/media_publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ creation_id: createData.id, access_token: token }),
+      signal: AbortSignal.timeout(15000),
+    })
+    const pubData: IgResult = await pubRes.json()
+    return NextResponse.json({ step: 'publish', ok: pubRes.ok, result: pubData })
   }
 
   const slot = parseInt(req.nextUrl.searchParams.get('slot') ?? '0', 10)
