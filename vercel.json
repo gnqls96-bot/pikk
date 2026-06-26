@@ -1,4 +1,5 @@
 {
+  "alias": ["fliqk.vercel.app"],
   "crons": [
     {
       "path": "/api/generate-trends-crawl",
