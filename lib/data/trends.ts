@@ -12,6 +12,7 @@ export async function getTrends(category?: string): Promise<Trend[]> {
       let query = supabase
         .from('trends')
         .select('*')
+        .or('instagram_post_id.is.null,instagram_post_id.not.in.(duplicate_removed,skipped)')
         .order('published_at', { ascending: false })
       if (category) query = query.eq('category', category)
       const { data, error } = await query
