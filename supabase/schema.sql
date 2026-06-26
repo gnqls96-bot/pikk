@@ -30,3 +30,8 @@ create policy "anyone can join waitlist" on waitlist
 
 create policy "trends image_url is updatable" on trends
   for update using (true) with check (true);
+
+-- source_url 중복 방지: null이 아닌 URL에 대해서만 unique 적용
+create unique index if not exists trends_source_url_unique
+  on trends (source_url)
+  where source_url is not null;

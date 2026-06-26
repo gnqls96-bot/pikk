@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { checkIsAIDuplicate } from '@/lib/utils/aiDedup'
 
 export const runtime = 'nodejs'
 export const maxDuration = 300
@@ -31,37 +32,195 @@ interface TrendRow {
   tags: string[]
   instagram_post_id: string | null
   published_at: string
+  source_url?: string | null
 }
 
 // ── Supabase ─────────────────────────────────────────────────────────────────
-function sbHeaders() {
+function sbReadHeaders() {
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? ''
   return { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }
 }
 
-// Oldest unpublished trend across all time (unlike instagram-publish which limits to 24h)
-async function fetchOldestUnpublished(): Promise<TrendRow | null> {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-  if (!url) return null
-  const res = await fetch(
-    `${url}/rest/v1/trends?instagram_post_id=is.null&select=id,title,summary,body,category,tags,instagram_post_id,published_at&order=published_at.asc&limit=1`,
-    { headers: sbHeaders(), signal: AbortSignal.timeout(8000) }
-  )
-  if (!res.ok) { log('fetchOldestUnpublished error', await res.text()); return null }
-  const rows: TrendRow[] = await res.json()
-  return rows[0] ?? null
+// Writes use SERVICE_ROLE_KEY to bypass RLS; anon key silently fails on PATCH if RLS is enabled
+function sbWriteHeaders() {
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? ''
+  return { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }
 }
 
-async function markPublished(trendId: string, postId: string) {
+// Returns KST today's midnight as UTC ISO string (e.g. 2026-06-24T00:00+09:00 → UTC 2026-06-23T15:00)
+function kstTodayMidnightUTC(): string {
+  const now = new Date()
+  const kstNow = new Date(now.getTime() + 9 * 3600000)
+  // midnight of current KST date, expressed in UTC
+  const midnightKST = new Date(Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth(), kstNow.getUTCDate()))
+  return new Date(midnightKST.getTime() - 9 * 3600000).toISOString()
+}
+
+// Mark a trend as 'duplicate_removed' (never published, duplicate of another trend)
+async function markDuplicateRemoved(trendId: string) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   if (!url) return
+  await fetch(`${url}/rest/v1/trends?id=eq.${trendId}&instagram_post_id=is.null`, {
+    method: 'PATCH',
+    headers: { ...sbWriteHeaders(), Prefer: 'return=minimal' },
+    body: JSON.stringify({ instagram_post_id: 'duplicate_removed' }),
+    signal: AbortSignal.timeout(5000),
+  })
+}
+
+// TODAY TOP: most recently published trend from today (KST) that hasn't been posted to Instagram.
+// This matches the homepage hero — getTrends() orders published_at DESC, trends[0] = TODAY TOP.
+// 1차: source_url dup check (same article re-crawled)
+// 3차: AI dup check against recently published trends (same event already covered)
+async function fetchTodayTop(): Promise<TrendRow | null> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  if (!url) return null
+  const since = kstTodayMidnightUTC()
+
+  // Today's null candidates
+  const res = await fetch(
+    `${url}/rest/v1/trends?instagram_post_id=is.null&published_at=gte.${encodeURIComponent(since)}&select=id,title,summary,body,category,tags,instagram_post_id,published_at,source_url&order=published_at.desc,id.desc&limit=10`,
+    { headers: sbReadHeaders(), signal: AbortSignal.timeout(8000) }
+  )
+  if (!res.ok) { log('fetchTodayTop error', await res.text()); return null }
+  const candidates: TrendRow[] = await res.json()
+
+  // Recently published trends (last 30 days, real IG post IDs) — for AI dup check
+  const since30d = new Date(Date.now() - 30 * 86400000).toISOString()
+  const pubRes = await fetch(
+    `${url}/rest/v1/trends?published_at=gte.${encodeURIComponent(since30d)}&select=id,title,summary,category,instagram_post_id&order=published_at.desc&limit=50`,
+    { headers: sbReadHeaders(), signal: AbortSignal.timeout(8000) }
+  ).catch(() => null)
+  const allRecent: { id: string; title: string; summary: string; category: string; instagram_post_id: string | null }[] =
+    pubRes?.ok ? await pubRes.json() : []
+  const recentlyPublished = allRecent.filter(t => {
+    const id = t.instagram_post_id
+    return id && !['skipped', 'PUBLISHING', 'duplicate_removed'].includes(id)
+  })
+
+  const apiKey = process.env.ANTHROPIC_API_KEY ?? ''
+
+  for (const candidate of candidates) {
+    // ── 1차: source_url 정확 일치 ───────────────────────────────────────
+    if (candidate.source_url) {
+      const dupRes = await fetch(
+        `${url}/rest/v1/trends?source_url=eq.${encodeURIComponent(candidate.source_url)}&id=neq.${candidate.id}&select=id&limit=1`,
+        { headers: sbReadHeaders(), signal: AbortSignal.timeout(5000) }
+      )
+      if (dupRes.ok) {
+        const dups: unknown[] = await dupRes.json()
+        if (Array.isArray(dups) && dups.length > 0) {
+          await markDuplicateRemoved(candidate.id)
+          log('fetchTodayTop: source_url dup → duplicate_removed', { trendId: candidate.id, title: candidate.title })
+          continue
+        }
+      }
+    }
+
+    // ── 3차: AI — 최근 발행된 트렌드와 같은 사건인지 판단 ────────────────
+    if (apiKey && recentlyPublished.length > 0) {
+      const sameCat = recentlyPublished.filter(t => t.category === candidate.category)
+      if (sameCat.length > 0) {
+        const result = await checkIsAIDuplicate(
+          { title: candidate.title, summary: candidate.summary ?? '', category: candidate.category },
+          sameCat,
+          apiKey,
+        ).catch(() => ({ isDuplicate: false, duplicateOfId: null, reason: '' }))
+        if (result.isDuplicate) {
+          await markDuplicateRemoved(candidate.id)
+          log('fetchTodayTop: AI dup → duplicate_removed', {
+            trendId: candidate.id,
+            title: candidate.title,
+            reason: result.reason,
+            duplicateOf: result.duplicateOfId,
+          })
+          continue
+        }
+      }
+    }
+
+    return candidate
+  }
+  return null
+}
+
+// Mark all pre-today trends (instagram_post_id IS NULL) as 'skipped' — removes them from publish queue.
+async function markBacklogSkipped(): Promise<number> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  if (!url) return 0
+  const cutoff = kstTodayMidnightUTC()
+  const res = await fetch(
+    `${url}/rest/v1/trends?instagram_post_id=is.null&published_at=lt.${encodeURIComponent(cutoff)}`,
+    {
+      method: 'PATCH',
+      headers: { ...sbWriteHeaders(), Prefer: 'return=representation' },
+      body: JSON.stringify({ instagram_post_id: 'skipped' }),
+      signal: AbortSignal.timeout(10000),
+    }
+  )
+  if (!res.ok) { log('markBacklogSkipped error', await res.text()); return 0 }
+  const rows: unknown[] = await res.json()
+  const count = Array.isArray(rows) ? rows.length : 0
+  log('markBacklogSkipped', { count, cutoff })
+  return count
+}
+
+// Atomically claim a trend for publishing: sets instagram_post_id='PUBLISHING' only if still null.
+// Returns true if claim succeeded (we own it), false if already claimed/published by another call.
+async function claimTrend(trendId: string): Promise<boolean> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  if (!url) return false
+  const res = await fetch(
+    `${url}/rest/v1/trends?id=eq.${trendId}&instagram_post_id=is.null`,
+    {
+      method: 'PATCH',
+      headers: { ...sbWriteHeaders(), Prefer: 'return=representation' },
+      body: JSON.stringify({ instagram_post_id: 'PUBLISHING' }),
+      signal: AbortSignal.timeout(8000),
+    }
+  )
+  if (!res.ok) {
+    log('claimTrend error', { trendId, status: res.status, err: await res.text() })
+    return false
+  }
+  const rows: unknown[] = await res.json()
+  const claimed = Array.isArray(rows) && rows.length > 0
+  log('claimTrend', { trendId, claimed })
+  return claimed
+}
+
+// Release a stuck claim back to null (called on publish failure)
+async function releaseClaim(trendId: string) {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  if (!url) return
+  const res = await fetch(
+    `${url}/rest/v1/trends?id=eq.${trendId}&instagram_post_id=eq.PUBLISHING`,
+    {
+      method: 'PATCH',
+      headers: { ...sbWriteHeaders(), Prefer: 'return=minimal' },
+      body: JSON.stringify({ instagram_post_id: null }),
+      signal: AbortSignal.timeout(8000),
+    }
+  )
+  if (!res.ok) log('releaseClaim error', { trendId, err: await res.text() })
+  else log('releaseClaim ok', { trendId })
+}
+
+async function markPublished(trendId: string, postId: string): Promise<boolean> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  if (!url) return false
   const res = await fetch(`${url}/rest/v1/trends?id=eq.${trendId}`, {
     method: 'PATCH',
-    headers: { ...sbHeaders(), Prefer: 'return=minimal' },
+    headers: { ...sbWriteHeaders(), Prefer: 'return=minimal' },
     body: JSON.stringify({ instagram_post_id: postId }),
     signal: AbortSignal.timeout(8000),
   })
-  if (!res.ok) log('markPublished error', { trendId, postId, err: await res.text() })
+  if (!res.ok) {
+    log('markPublished error', { trendId, postId, status: res.status, err: await res.text() })
+    return false
+  }
+  log('markPublished ok', { trendId, postId })
+  return true
 }
 
 // ── Instagram API helpers ────────────────────────────────────────────────────
@@ -222,6 +381,15 @@ async function publishTrend(trend: TrendRow): Promise<{
 
   log('publishTrend start', { trendId: trend.id, title: trend.title })
 
+  // 0. Atomically claim this trend to prevent concurrent duplicate publishes.
+  //    Sets instagram_post_id='PUBLISHING' only if still null — if another call
+  //    already claimed it, this returns false and we abort immediately.
+  const claimed = await claimTrend(trend.id)
+  if (!claimed) {
+    log('publishTrend skipped — already claimed or published', { trendId: trend.id })
+    return { success: false, error: '이미 다른 호출이 발행 중이거나 완료됨 (중복 방지)' }
+  }
+
   // 1. Probe slide count
   let totalSlides = 3
   for (let n = 5; n >= 4; n--) {
@@ -234,15 +402,15 @@ async function publishTrend(trend: TrendRow): Promise<{
   const childrenIds: string[] = []
   for (let slide = 1; slide <= totalSlides; slide++) {
     const { id, blocked: itemBlocked } = await createCarouselItem(accountId, `${CARD_BASE}/${trend.id}/${slide}`)
-    if (itemBlocked) return { success: false, blocked: true, error: `슬라이드 ${slide} 생성 단계에서 action blocked` }
-    if (!id) return { success: false, error: `슬라이드 ${slide} 컨테이너 생성 실패` }
+    if (itemBlocked) { await releaseClaim(trend.id); return { success: false, blocked: true, error: `슬라이드 ${slide} 생성 단계에서 action blocked` } }
+    if (!id) { await releaseClaim(trend.id); return { success: false, error: `슬라이드 ${slide} 컨테이너 생성 실패` } }
     childrenIds.push(id)
   }
 
   // 3. Wait for each item to reach FINISHED
   for (let i = 0; i < childrenIds.length; i++) {
     const ready = await waitForFinished(childrenIds[i], `slide${i + 1}`)
-    if (!ready) return { success: false, error: `슬라이드 ${i + 1} FINISHED 대기 실패` }
+    if (!ready) { await releaseClaim(trend.id); return { success: false, error: `슬라이드 ${i + 1} FINISHED 대기 실패` } }
   }
 
   // 4. Caption
@@ -251,11 +419,11 @@ async function publishTrend(trend: TrendRow): Promise<{
 
   // 5. Create carousel container
   const carouselId = await createCarousel(accountId, childrenIds, caption)
-  if (!carouselId) return { success: false, error: '캐러셀 컨테이너 생성 실패' }
+  if (!carouselId) { await releaseClaim(trend.id); return { success: false, error: '캐러셀 컨테이너 생성 실패' } }
 
   // 6. Wait for carousel to reach FINISHED
   const carouselReady = await waitForFinished(carouselId, 'carousel')
-  if (!carouselReady) return { success: false, error: '캐러셀 FINISHED 대기 실패' }
+  if (!carouselReady) { await releaseClaim(trend.id); return { success: false, error: '캐러셀 FINISHED 대기 실패' } }
 
   // 7. Publish
   const { id: postId, igError } = await publishMedia(accountId, carouselId)
@@ -264,11 +432,17 @@ async function publishTrend(trend: TrendRow): Promise<{
     const igMsg = igError
       ? `[ig code=${igError.code ?? '?'} sub=${igError.error_subcode ?? '-'}] ${igError.message}`
       : '알 수 없음'
+    await releaseClaim(trend.id)
     return { success: false, blocked: isBlocked, error: `발행 실패: ${igMsg}` }
   }
 
-  // 8. Record in DB immediately after success
-  await markPublished(trend.id, postId)
+  // 8. Record real postId in DB (replaces 'PUBLISHING' with actual ID)
+  const marked = await markPublished(trend.id, postId)
+  if (!marked) {
+    log('markPublished failed — post published but DB not updated!', { trendId: trend.id, postId })
+    // Post is live on Instagram; returning success so it doesn't retry.
+    // Manual DB fix needed: UPDATE trends SET instagram_post_id='<postId>' WHERE id='<trendId>'
+  }
   log('publishTrend success', { trendId: trend.id, postId })
   return { success: true, postId }
 }
@@ -285,6 +459,63 @@ export async function GET(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get('secret')
   if (secret !== process.env.CRON_SECRET && secret !== process.env.ADMIN_PASSWORD) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  // POST body: { fixes: [{trendId, postId}] } — manually set instagram_post_id for orphaned posts
+  // Only used via POST so it doesn't accidentally run via cron GET
+  // (handled in POST handler below)
+
+  // ?ig_media=true — List recent Instagram media for diagnosis (no DB writes)
+  if (req.nextUrl.searchParams.get('ig_media') === 'true') {
+    const token = process.env.INSTAGRAM_ACCESS_TOKEN ?? ''
+    const accountId = process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID ?? ''
+    const res = await fetch(
+      `${IG_API}/${accountId}/media?fields=id,caption,timestamp,permalink&limit=25&access_token=${token}`,
+      { signal: AbortSignal.timeout(10000) }
+    )
+    const data = await res.json()
+    return NextResponse.json({ ok: res.ok, media: data })
+  }
+
+  // ?db_query=<keyword> — Search DB rows by partial title (ilike) or list recent unpublished
+  const dbQuery = req.nextUrl.searchParams.get('db_query')
+  if (dbQuery !== null) {
+    const sbUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+    if (!sbUrl) return NextResponse.json({ error: 'Supabase URL missing' }, { status: 500 })
+    // empty string → list all trends with null instagram_post_id (recent first)
+    const filter = dbQuery
+      ? `title=ilike.${encodeURIComponent(`%${dbQuery}%`)}`
+      : `published_at=gte.${encodeURIComponent(new Date(Date.now() - 30 * 86400000).toISOString())}`
+    const res = await fetch(
+      `${sbUrl}/rest/v1/trends?${filter}&select=id,title,created_at,published_at,instagram_post_id,source_url&order=published_at.desc&limit=30`,
+      { headers: sbReadHeaders(), signal: AbortSignal.timeout(8000) }
+    )
+    if (!res.ok) return NextResponse.json({ error: await res.text() }, { status: res.status })
+    const rows = await res.json()
+    return NextResponse.json({ query: dbQuery || '(all recent)', count: rows.length, rows })
+  }
+
+  // ?skip_backlog=true — One-time: mark all pre-today (KST) null trends as 'skipped'
+  if (req.nextUrl.searchParams.get('skip_backlog') === 'true') {
+    const count = await markBacklogSkipped()
+    return NextResponse.json({ skip_backlog: true, skipped: count, cutoff: kstTodayMidnightUTC() })
+  }
+
+  // ?claim_test=true — Proves atomic claim works without any Instagram API calls.
+  if (req.nextUrl.searchParams.get('claim_test') === 'true') {
+    const trend = await fetchTodayTop()
+    if (!trend) return NextResponse.json({ claim_test: true, error: '오늘 발행된 미발행 트렌드 없음' })
+    const claim1 = await claimTrend(trend.id)
+    const claim2 = await claimTrend(trend.id)
+    await releaseClaim(trend.id)
+    const afterRelease = await fetchTodayTop()
+    return NextResponse.json({
+      claim_test: true,
+      trend: { id: trend.id, title: trend.title },
+      claim1_result: claim1,
+      claim2_result: claim2,
+      after_release_found: afterRelease?.id === trend.id,
+    })
   }
 
   log('daily run start')
@@ -308,23 +539,24 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'account check failed', detail: acctData.error }, { status: 500 })
   }
 
-  // ── Step 2: Find oldest unpublished trend ────────────────────────────────
-  const trend = await fetchOldestUnpublished()
+  // ── Step 2: Find TODAY TOP — most recently published trend from today (KST) ─
+  const trend = await fetchTodayTop()
   if (!trend) {
-    log('no unpublished trends')
+    log('no today top trend')
     return NextResponse.json({
       noTrends: true,
+      reason: '오늘(KST) 발행된 미발행 트렌드 없음 — 트렌드 생성 전이거나 이미 발행됨',
       ts: new Date().toISOString(),
       account: { username: acctData.username, media_count: acctData.media_count },
     })
   }
-  log('trend selected', { trendId: trend.id, title: trend.title, published_at: trend.published_at })
+  log('today top selected', { trendId: trend.id, title: trend.title, published_at: trend.published_at })
 
   // ── Step 3: Publish (block detection happens here via code=4) ─────────────
   const result = await publishTrend(trend)
 
   if (!result.success) {
-    log('publish failed', { trendId: trend.id, title: trend.title, error: result.error, blocked: result.blocked })
+    log('publish failed', { trendId: trend.id, title: trend.title, error: result.error, blocked: result.blocked, strategy: 'today-top' })
     if (result.blocked) {
       return NextResponse.json({
         blocked: true,
@@ -345,4 +577,30 @@ export async function GET(req: NextRequest) {
     postId: result.postId,
     account: { username: acctData.username, media_count: acctData.media_count + 1 },
   })
+}
+
+// POST /api/instagram-daily?secret=CRON_SECRET
+// Body: { fixes: [{ trendId: string, postId: string }] }
+// Manually sets instagram_post_id for orphaned posts (published but DB not updated due to old bug)
+export async function POST(req: NextRequest) {
+  const secret = req.nextUrl.searchParams.get('secret')
+  if (secret !== process.env.CRON_SECRET && secret !== process.env.ADMIN_PASSWORD) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  let body: { fixes?: { trendId: string; postId: string }[] } = {}
+  try { body = await req.json() } catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }) }
+
+  const fixes = body.fixes ?? []
+  if (fixes.length === 0) return NextResponse.json({ error: 'No fixes provided' }, { status: 400 })
+
+  const results: { trendId: string; postId: string; ok: boolean; error?: string }[] = []
+  for (const { trendId, postId } of fixes) {
+    const ok = await markPublished(trendId, postId)
+    results.push({ trendId, postId, ok })
+  }
+
+  const allOk = results.every(r => r.ok)
+  log('manual DB fix', { fixes: results })
+  return NextResponse.json({ success: allOk, results }, { status: allOk ? 200 : 207 })
 }

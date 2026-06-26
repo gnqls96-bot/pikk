@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { createServerClient } from '@/lib/supabase/server'
 import type { Category, RelatedSource, GalleryImage } from '@/lib/types'
+import { checkIsAIDuplicate } from '@/lib/utils/aiDedup'
 
 export const maxDuration = 300
 
@@ -222,9 +223,99 @@ export async function POST() {
       published_at: new Date().toISOString(),
     }))
 
-    const { data, error } = await supabase.from('trends').insert(rows).select()
+    // ── 중복 방지 (DB 저장 전) ─────────────────────────────────────────────
+    // 최근 14일 트렌드를 한 번만 조회해서 1차·2차·3차 방어선 공용으로 사용
+    const since14d = new Date(Date.now() - 14 * 86400000).toISOString()
+    const { data: recentTrends } = await supabase
+      .from('trends')
+      .select('id, title, summary, category, tags, source_url')
+      .gte('published_at', since14d)
+
+    const recentList = (recentTrends ?? []) as {
+      id: string; title: string; summary: string; category: string; tags: string[]; source_url: string | null
+    }[]
+    const existingUrlSet = new Set(
+      recentList.filter(r => r.source_url).map(r => r.source_url as string)
+    )
+
+    // 범용 태그 (2차 태그 겹침 체크에서 제외)
+    const GENERIC_TAGS = new Set(['트렌드', '글로벌', '바이럴', 'SNS', '2026', '한국', '인스타그램', '유튜브'])
+
+    const dedupSkipped: { title: string; reason: string }[] = []
+
+    // ── 1차: source_url 정확 일치 ──────────────────────────────────────────
+    // ── 2차: 같은 카테고리 + 비범용 태그 2개 이상 겹침 (보조 신호) ──────────
+    let afterSyncCheck = rows.filter(row => {
+      if (row.source_url && existingUrlSet.has(row.source_url)) {
+        dedupSkipped.push({ title: row.title, reason: `[1차] source_url 중복: ${row.source_url}` })
+        return false
+      }
+      const contentTags = (row.tags as string[]).filter(t => !GENERIC_TAGS.has(t))
+      for (const recent of recentList) {
+        if (recent.category !== row.category) continue
+        const recentTagSet = new Set(recent.tags.filter((t: string) => !GENERIC_TAGS.has(t)))
+        const overlap = contentTags.filter(t => recentTagSet.has(t)).length
+        if (overlap >= 2) {
+          dedupSkipped.push({ title: row.title, reason: `[2차] 태그 ${overlap}개 겹침 ← "${recent.title}"` })
+          return false
+        }
+      }
+      return true
+    })
+
+    // ── 3차: AI 기반 같은 사건 판단 (카테고리별 1회 Haiku 호출) ─────────────
+    const apiKey = process.env.ANTHROPIC_API_KEY ?? ''
+    if (apiKey && afterSyncCheck.length > 0 && recentList.length > 0) {
+      const finalRows: typeof afterSyncCheck = []
+
+      // Group candidates by category
+      const byCategory = new Map<string, typeof afterSyncCheck>()
+      for (const row of afterSyncCheck) {
+        const arr = byCategory.get(row.category) ?? []
+        arr.push(row)
+        byCategory.set(row.category, arr)
+      }
+
+      for (const [category, catRows] of byCategory) {
+        const existingInCat = recentList.filter(r => r.category === category)
+        if (existingInCat.length === 0) {
+          finalRows.push(...catRows)
+          continue
+        }
+        for (const row of catRows) {
+          const result = await checkIsAIDuplicate(
+            { title: row.title, summary: row.summary ?? '', category },
+            existingInCat,
+            apiKey,
+          )
+          if (result.isDuplicate) {
+            dedupSkipped.push({
+              title: row.title,
+              reason: `[3차] AI 중복 판정 — ${result.reason}${result.duplicateOfId ? ` (← id:${result.duplicateOfId})` : ''}`,
+            })
+          } else {
+            finalRows.push(row)
+          }
+        }
+      }
+      afterSyncCheck = finalRows
+    }
+
+    const dedupedRows = afterSyncCheck
+
+    if (dedupedRows.length === 0) {
+      return NextResponse.json({
+        success: true,
+        count: 0,
+        skipped: dedupSkipped.length,
+        skippedDetails: dedupSkipped,
+        message: '모든 트렌드가 중복으로 스킵됨',
+      })
+    }
+
+    const { data, error } = await supabase.from('trends').insert(dedupedRows).select()
     if (error) {
-      return NextResponse.json({ error: error.message, rows }, { status: 500 })
+      return NextResponse.json({ error: error.message, rows: dedupedRows }, { status: 500 })
     }
 
     const withImages = (data as Array<{ image_url: string | null }>).filter((r) => r.image_url).length
@@ -233,6 +324,8 @@ export async function POST() {
     return NextResponse.json({
       success: true,
       count: data.length,
+      skipped: dedupSkipped.length,
+      skippedDetails: dedupSkipped,
       withImages,
       withBody,
       trends: data,
