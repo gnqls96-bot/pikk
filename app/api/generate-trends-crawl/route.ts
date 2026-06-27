@@ -497,7 +497,11 @@ async function generateWithClaude(
       }),
       signal: AbortSignal.timeout(100000),
     })
-    if (!res.ok) return { results: [], selected, error: `Claude HTTP ${res.status}` }
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '(body unreadable)')
+      log('claude_api_error', { status: res.status, body: errBody.slice(0, 500) })
+      return { results: [], selected, error: `Claude HTTP ${res.status}: ${errBody.slice(0, 200)}` }
+    }
     const data = await res.json()
     if (data.error) return { results: [], selected, error: `Claude 오류: ${data.error.message}` }
     const text: string = data.content?.[0]?.text ?? ''
